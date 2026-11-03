@@ -1,0 +1,1 @@
+const {chromium}=require('playwright');(async()=>{const b=await chromium.launch();const p=await b.newPage({viewport:{width:1600,height:1000},deviceScaleFactor:1.5});await p.goto('file://'+process.cwd()+'/enc_wiring.svg');await p.screenshot({path:'so_do_noi_encoder.png'});await b.close();})();

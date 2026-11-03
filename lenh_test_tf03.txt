@@ -1,0 +1,131 @@
+=====================================================================
+ LỆNH TEST KHOẢNG CÁCH VỚI TF03 (Windows PowerShell)
+ Thư mục làm việc: F:\DATN_PC\Demo
+ Cần có: tf03_tool.py, tf03_raw_view.py, analyze_t1.py
+ Thay COM3 bằng cổng COM thực tế của em ở MỌI lệnh bên dưới.
+ Tham số chung (--port, --baud) luôn đặt TRƯỚC tên lệnh con.
+=====================================================================
+
+
+---------------------------------------------------------------------
+0. CHUẨN BỊ (làm 1 lần)
+---------------------------------------------------------------------
+cd F:\DATN_PC\Demo
+pip install pyserial numpy matplotlib
+
+# Xem các cổng COM đang có (tìm dòng "Silicon Labs CP210x")
+python -m serial.tools.list_ports -v
+
+# Nếu không thấy COM: kiểm tra Windows có nhận CP2102 không
+Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -match 'VID_10C4' } | Format-Table Status, FriendlyName -AutoSize
+
+# Nếu báo "PermissionError / Access is denied": có chương trình khác đang giữ cổng
+# (Benewake GUI, cửa sổ Python cũ). Tắt chúng đi, hoặc:
+Get-Process python, *benewake* -ErrorAction SilentlyContinue | Stop-Process
+
+
+---------------------------------------------------------------------
+1. KIỂM TRA NHANH: TF03 CÓ GỬI DỮ LIỆU KHÔNG
+---------------------------------------------------------------------
+# Đếm số khung/s trong 1 giây. Mặc định sau khi cấp nguồn: ~100 khung/s
+python tf03_tool.py --port COM3 check
+
+# Xem byte thô (hex), tự tìm cặp 59 59 bằng mắt
+python tf03_raw_view.py --port COM3 --mode raw -n 10
+
+# Xem từng khung đã giải mã: 9 byte, checksum, khoảng cách, cường độ
+python tf03_raw_view.py --port COM3 --mode frame -n 30
+
+
+---------------------------------------------------------------------
+2. KIỂM TRA CHIỀU GỬI LỆNH (TX)
+---------------------------------------------------------------------
+# Có phản hồi bắt đầu bằng 5A  -> chiều TX thông
+# Không phản hồi -> vẫn đo được (TF03 tự phát), chỉ không đổi được cài đặt
+python tf03_tool.py --port COM3 version
+
+
+---------------------------------------------------------------------
+3. ĐO NHANH Ở MỘT KHOẢNG CÁCH (in thống kê, không lưu file)
+---------------------------------------------------------------------
+# 1000 mẫu (~10 s ở 100 Hz): in trung bình, std, min, max, tốc độ khung
+python tf03_tool.py --port COM3 stats -n 1000
+
+# Đọc dòng tốc độ khung: phải ~100 khung/s (hoặc ~1000 nếu đã đặt 1000 Hz).
+# Nếu ra hàng chục nghìn khung/s -> dữ liệu cũ trong bộ đệm, chạy lại lệnh.
+
+
+---------------------------------------------------------------------
+4. THÍ NGHIỆM T1: ĐỘ CHÍNH XÁC THEO KHOẢNG CÁCH
+---------------------------------------------------------------------
+Chuẩn bị:
+  - Cấp nguồn TF03, đợi 2 phút cho ổn định (TF03 trôi ~0,5 cm trong 25 s đầu).
+  - KHÔNG tắt nguồn TF03 trong suốt thí nghiệm.
+  - Tắt quạt, không ai đi qua tia. Bia: tường trắng phẳng, chiếu vuông góc.
+  - Máy đo laser đặt sát TF03, mặt trước ngang nhau. Ghi rõ máy laser đo
+    từ mép trước hay mép sau, và độ chính xác ghi trên nhãn máy.
+  - Mỗi vị trí: đo bằng máy laser 3 lần, lấy trung bình (đổi ra cm).
+  - Tên file PHẢI chứa khoảng cách thật, dạng T1_<số>cm.csv
+
+# Ví dụ 7 vị trí (thay số bằng giá trị máy laser đo được):
+python tf03_tool.py --port COM3 log -n 3000 -o T1_50.3cm.csv  --note "tuong trang, 100Hz, quat tat"
+python tf03_tool.py --port COM3 log -n 3000 -o T1_100.2cm.csv --note "tuong trang, 100Hz, quat tat"
+python tf03_tool.py --port COM3 log -n 3000 -o T1_200.6cm.csv --note "tuong trang, 100Hz, quat tat"
+python tf03_tool.py --port COM3 log -n 3000 -o T1_300.1cm.csv --note "tuong trang, 100Hz, quat tat"
+python tf03_tool.py --port COM3 log -n 3000 -o T1_500.4cm.csv --note "tuong trang, 100Hz, quat tat"
+python tf03_tool.py --port COM3 log -n 3000 -o T1_800.0cm.csv --note "tuong trang, 100Hz, quat tat"
+python tf03_tool.py --port COM3 log -n 3000 -o T1_1000.5cm.csv --note "hanh lang, 100Hz, quat tat"
+
+# Sau MỖI lệnh: đọc dòng "Tốc độ ghi" ~100 khung/s. Lệch nhiều -> ghi lại.
+
+# Phân tích tất cả file T1 -> T1_summary.csv và T1_result.png
+python analyze_t1.py
+
+
+---------------------------------------------------------------------
+5. THÍ NGHIỆM T2: ẢNH HƯỞNG ĐỘ PHẢN XẠ (cùng một khoảng cách)
+---------------------------------------------------------------------
+# Đặt bia trắng / xám / đen / vải đen ở cùng vị trí, ví dụ 300 cm
+python tf03_tool.py --port COM3 log -n 3000 -o T2_trang_300cm.csv  --note "giay trang"
+python tf03_tool.py --port COM3 log -n 3000 -o T2_xam_300cm.csv    --note "giay xam"
+python tf03_tool.py --port COM3 log -n 3000 -o T2_den_300cm.csv    --note "giay den"
+python tf03_tool.py --port COM3 log -n 3000 -o T2_vaiden_300cm.csv --note "vai den"
+# So sánh: trung bình, std, cường độ (strength) giữa các file
+
+
+---------------------------------------------------------------------
+6. THÍ NGHIỆM T5: TRÔI KHI KHỞI ĐỘNG NGUỘI (1 giờ)
+---------------------------------------------------------------------
+# TF03 nguội (tắt nguồn >= 30 phút). Cắm nguồn rồi chạy NGAY:
+python tf03_tool.py --port COM3 log -n 360000 -o T5_coldstart_200cm.csv --note "khoi dong nguoi, 100Hz, 1 gio"
+# 360000 mẫu ở 100 Hz = 1 giờ. Không chạm vào gá trong lúc ghi.
+
+
+---------------------------------------------------------------------
+7. GHI Ở 1000 Hz (chỉ khi chiều TX đã thông, mục 2)
+---------------------------------------------------------------------
+python tf03_tool.py --port COM3 set-rate 1000
+python tf03_tool.py --port COM3 check            # phải ra ~1000 khung/s
+python tf03_tool.py --port COM3 log -n 30000 -o R5_1000hz_203cm.csv --note "1000Hz, quat tat"
+
+# Quay về 100 Hz
+python tf03_tool.py --port COM3 set-rate 100
+
+# LƯU Ý: set-rate MẤT khi tắt nguồn. Muốn giữ lại sau khi tắt nguồn:
+#   python tf03_tool.py --port COM3 save
+# Chỉ dùng save khi chắc chắn muốn đổi cài đặt mặc định.
+# Khôi phục cài đặt gốc (cẩn thận):
+#   python tf03_tool.py --port COM3 factory
+
+
+---------------------------------------------------------------------
+8. KHI GẶP LỖI
+---------------------------------------------------------------------
+- check ra 0 khung/s       : kiểm tra dây nâu (TX TF03) -> RXD CP2102, chung GND,
+                             nguồn 5 V vào dây đỏ. Đo thông mạch nếu cần.
+- Không hiện COM           : cắm lại, dùng cáp nối dài USB, đúng cổng đã từng chạy.
+- PermissionError          : tắt Benewake GUI / Python cũ (mục 0).
+- Tốc độ khung bất thường  : chạy lại lệnh (bộ đệm còn dữ liệu cũ).
+- Khoảng cách = 18000      : ngoài tầm đo hoặc không có vật trước tia.
+- Cường độ < 40            : tín hiệu yếu (bia tối, xa, hoặc lệch góc).
+=====================================================================

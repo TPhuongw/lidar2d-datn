@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+# du lieu do va file sinh ra
+log_*/
+lidar_app/log_*/
+lidar_app/settings.json
+lidar_app/log_gia_lap/
+calib_B_in_A.json
+*.zip
+# KiCad: file tam / sao luu
+*.kicad_prl
+*-backups/
+fp-info-cache
+*.lck
+# he dieu hanh
+.DS_Store
+Thumbs.db
+desktop.ini

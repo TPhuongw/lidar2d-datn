@@ -1,0 +1,166 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" font-family="Arial, Helvetica, sans-serif">
+<rect width="1600" height="1000" fill="#ffffff"/>
+<text x="40" y="56" font-size="34" font-weight="bold" fill="#1b232c">Nối cảm biến khe (encoder) vào Arduino UNO qua breadboard</text>
+<text x="40" y="96" font-size="22" fill="#5b6670">Dây driver (D9→PUL+, D8→DIR+, PUL−/DIR−→GND) giữ nguyên, không vẽ lại</text>
+<rect x="60" y="140" width="368" height="560" rx="18" fill="#1f6fb2"/>
+<text x="240" y="195" text-anchor="middle" font-size="32" font-weight="bold" fill="#fff">Arduino UNO</text>
+<rect x="404" y="238" width="24" height="24" fill="#2b2b2b" stroke="#ffffff" stroke-width="3"/>
+<text x="390" y="259" text-anchor="end" font-size="26" font-weight="bold" fill="#fff">D9</text>
+<text x="96" y="258" font-size="19" fill="#cfe3f5">→ PUL+ (giữ nguyên)</text>
+<rect x="404" y="288" width="24" height="24" fill="#2b2b2b" stroke="#ffffff" stroke-width="3"/>
+<text x="390" y="309" text-anchor="end" font-size="26" font-weight="bold" fill="#fff">D8</text>
+<text x="96" y="308" font-size="19" fill="#cfe3f5">→ DIR+ (giữ nguyên)</text>
+<rect x="404" y="368" width="24" height="24" fill="#2b2b2b" stroke="#f2b705" stroke-width="3"/>
+<text x="390" y="389" text-anchor="end" font-size="26" font-weight="bold" fill="#fff">D2</text>
+<rect x="404" y="548" width="24" height="24" fill="#2b2b2b" stroke="#e03131" stroke-width="3"/>
+<text x="390" y="569" text-anchor="end" font-size="26" font-weight="bold" fill="#fff">5V</text>
+<rect x="404" y="618" width="24" height="24" fill="#2b2b2b" stroke="#222222" stroke-width="3"/>
+<text x="390" y="639" text-anchor="end" font-size="26" font-weight="bold" fill="#fff">GND</text>
+<text x="96" y="430" font-size="17" fill="#cfe3f5">D2: hàng DIGITAL, chân thứ 3</text>
+<text x="96" y="454" font-size="17" fill="#cfe3f5">tính từ góc (sau D0, D1)</text>
+<text x="96" y="610" font-size="17" fill="#cfe3f5">5V, GND: hàng POWER</text>
+<rect x="640" y="220" width="520" height="480" rx="12" fill="#f3efe4" stroke="#c9c2b0" stroke-width="2"/>
+<text x="900.0" y="734" text-anchor="middle" font-size="22" fill="#5b6670">Breadboard cắm dây</text>
+<line x1="656" y1="604" x2="1144" y2="604" stroke="#e03131" stroke-width="3"/>
+<rect x="671" y="615" width="10" height="10" fill="#9a9284"/>
+<rect x="701" y="615" width="10" height="10" fill="#9a9284"/>
+<rect x="731" y="615" width="10" height="10" fill="#9a9284"/>
+<rect x="761" y="615" width="10" height="10" fill="#9a9284"/>
+<rect x="791" y="615" width="10" height="10" fill="#9a9284"/>
+<rect x="821" y="615" width="10" height="10" fill="#9a9284"/>
+<rect x="851" y="615" width="10" height="10" fill="#9a9284"/>
+<rect x="881" y="615" width="10" height="10" fill="#9a9284"/>
+<rect x="911" y="615" width="10" height="10" fill="#9a9284"/>
+<rect x="941" y="615" width="10" height="10" fill="#9a9284"/>
+<rect x="971" y="615" width="10" height="10" fill="#9a9284"/>
+<rect x="1001" y="615" width="10" height="10" fill="#9a9284"/>
+<rect x="1031" y="615" width="10" height="10" fill="#9a9284"/>
+<rect x="1061" y="615" width="10" height="10" fill="#9a9284"/>
+<rect x="1091" y="615" width="10" height="10" fill="#9a9284"/>
+<rect x="1121" y="615" width="10" height="10" fill="#9a9284"/>
+<line x1="656" y1="644" x2="1144" y2="644" stroke="#1c64c4" stroke-width="3"/>
+<rect x="671" y="655" width="10" height="10" fill="#9a9284"/>
+<rect x="701" y="655" width="10" height="10" fill="#9a9284"/>
+<rect x="731" y="655" width="10" height="10" fill="#9a9284"/>
+<rect x="761" y="655" width="10" height="10" fill="#9a9284"/>
+<rect x="791" y="655" width="10" height="10" fill="#9a9284"/>
+<rect x="821" y="655" width="10" height="10" fill="#9a9284"/>
+<rect x="851" y="655" width="10" height="10" fill="#9a9284"/>
+<rect x="881" y="655" width="10" height="10" fill="#9a9284"/>
+<rect x="911" y="655" width="10" height="10" fill="#9a9284"/>
+<rect x="941" y="655" width="10" height="10" fill="#9a9284"/>
+<rect x="971" y="655" width="10" height="10" fill="#9a9284"/>
+<rect x="1001" y="655" width="10" height="10" fill="#9a9284"/>
+<rect x="1031" y="655" width="10" height="10" fill="#9a9284"/>
+<rect x="1061" y="655" width="10" height="10" fill="#9a9284"/>
+<rect x="1091" y="655" width="10" height="10" fill="#9a9284"/>
+<rect x="1121" y="655" width="10" height="10" fill="#9a9284"/>
+<text x="628" y="628" text-anchor="end" font-size="20" font-weight="bold" fill="#e03131"></text>
+<rect x="755" y="280" width="38" height="200" rx="8" fill="#f2b705" fill-opacity="0.35" stroke="#c99700" stroke-width="2"/>
+<rect x="1007" y="280" width="38" height="200" rx="8" fill="#9c36b5" fill-opacity="0.22" stroke="#9c36b5" stroke-width="2"/>
+<rect x="685" y="295" width="10" height="10" fill="#9a9284"/>
+<rect x="685" y="335" width="10" height="10" fill="#9a9284"/>
+<rect x="685" y="375" width="10" height="10" fill="#9a9284"/>
+<rect x="685" y="415" width="10" height="10" fill="#9a9284"/>
+<rect x="685" y="455" width="10" height="10" fill="#9a9284"/>
+<rect x="727" y="295" width="10" height="10" fill="#9a9284"/>
+<rect x="727" y="335" width="10" height="10" fill="#9a9284"/>
+<rect x="727" y="375" width="10" height="10" fill="#9a9284"/>
+<rect x="727" y="415" width="10" height="10" fill="#9a9284"/>
+<rect x="727" y="455" width="10" height="10" fill="#9a9284"/>
+<rect x="769" y="295" width="10" height="10" fill="#9a9284"/>
+<rect x="769" y="335" width="10" height="10" fill="#9a9284"/>
+<rect x="769" y="375" width="10" height="10" fill="#9a9284"/>
+<rect x="769" y="415" width="10" height="10" fill="#9a9284"/>
+<rect x="769" y="455" width="10" height="10" fill="#9a9284"/>
+<rect x="811" y="295" width="10" height="10" fill="#9a9284"/>
+<rect x="811" y="335" width="10" height="10" fill="#9a9284"/>
+<rect x="811" y="375" width="10" height="10" fill="#9a9284"/>
+<rect x="811" y="415" width="10" height="10" fill="#9a9284"/>
+<rect x="811" y="455" width="10" height="10" fill="#9a9284"/>
+<rect x="853" y="295" width="10" height="10" fill="#9a9284"/>
+<rect x="853" y="335" width="10" height="10" fill="#9a9284"/>
+<rect x="853" y="375" width="10" height="10" fill="#9a9284"/>
+<rect x="853" y="415" width="10" height="10" fill="#9a9284"/>
+<rect x="853" y="455" width="10" height="10" fill="#9a9284"/>
+<rect x="895" y="295" width="10" height="10" fill="#9a9284"/>
+<rect x="895" y="335" width="10" height="10" fill="#9a9284"/>
+<rect x="895" y="375" width="10" height="10" fill="#9a9284"/>
+<rect x="895" y="415" width="10" height="10" fill="#9a9284"/>
+<rect x="895" y="455" width="10" height="10" fill="#9a9284"/>
+<rect x="937" y="295" width="10" height="10" fill="#9a9284"/>
+<rect x="937" y="335" width="10" height="10" fill="#9a9284"/>
+<rect x="937" y="375" width="10" height="10" fill="#9a9284"/>
+<rect x="937" y="415" width="10" height="10" fill="#9a9284"/>
+<rect x="937" y="455" width="10" height="10" fill="#9a9284"/>
+<rect x="979" y="295" width="10" height="10" fill="#9a9284"/>
+<rect x="979" y="335" width="10" height="10" fill="#9a9284"/>
+<rect x="979" y="375" width="10" height="10" fill="#9a9284"/>
+<rect x="979" y="415" width="10" height="10" fill="#9a9284"/>
+<rect x="979" y="455" width="10" height="10" fill="#9a9284"/>
+<rect x="1021" y="295" width="10" height="10" fill="#9a9284"/>
+<rect x="1021" y="335" width="10" height="10" fill="#9a9284"/>
+<rect x="1021" y="375" width="10" height="10" fill="#9a9284"/>
+<rect x="1021" y="415" width="10" height="10" fill="#9a9284"/>
+<rect x="1021" y="455" width="10" height="10" fill="#9a9284"/>
+<rect x="1063" y="295" width="10" height="10" fill="#9a9284"/>
+<rect x="1063" y="335" width="10" height="10" fill="#9a9284"/>
+<rect x="1063" y="375" width="10" height="10" fill="#9a9284"/>
+<rect x="1063" y="415" width="10" height="10" fill="#9a9284"/>
+<rect x="1063" y="455" width="10" height="10" fill="#9a9284"/>
+<rect x="1105" y="295" width="10" height="10" fill="#9a9284"/>
+<rect x="1105" y="335" width="10" height="10" fill="#9a9284"/>
+<rect x="1105" y="375" width="10" height="10" fill="#9a9284"/>
+<rect x="1105" y="415" width="10" height="10" fill="#9a9284"/>
+<rect x="1105" y="455" width="10" height="10" fill="#9a9284"/>
+<text x="774" y="268" text-anchor="middle" font-size="20" font-weight="bold" fill="#8a6a00"></text>
+<path d="M428 560H580V620H676" fill="none" stroke="#e03131" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="676" cy="620" r="9" fill="#e03131" stroke="#222" stroke-width="2"/>
+<path d="M428 630H540V660H706" fill="none" stroke="#222222" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="706" cy="660" r="9" fill="#222222" stroke="#222" stroke-width="2"/>
+<path d="M428 380H774" fill="none" stroke="#f2b705" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="774" cy="380" r="9" fill="#f2b705" stroke="#222" stroke-width="2"/>
+<text x="470" y="368" font-size="20" font-weight="bold" fill="#8a6a00">dây D2</text>
+<path d="M774 460V620" fill="none" stroke="#8c8c8c" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="760" y="510.0" width="28" height="60" rx="10" fill="#e9d4a8" stroke="#8a7550" stroke-width="2"/>
+<rect x="760" y="518.0" width="28" height="6" fill="#7a4a1c"/>
+<rect x="760" y="530.0" width="28" height="6" fill="#111111"/>
+<rect x="760" y="542.0" width="28" height="6" fill="#f08c00"/>
+<text x="798" y="548.0" text-anchor="start" font-size="22" font-weight="bold" fill="#8a6a00">10k</text>
+<circle cx="774" cy="460" r="9" fill="#8c8c8c" stroke="#222" stroke-width="2"/>
+<circle cx="774" cy="620" r="9" fill="#8c8c8c" stroke="#222" stroke-width="2"/>
+<path d="M1026 460V620" fill="none" stroke="#8c8c8c" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+<rect x="1012" y="510.0" width="28" height="60" rx="10" fill="#e9d4a8" stroke="#8a7550" stroke-width="2"/>
+<rect x="1012" y="518.0" width="28" height="6" fill="#e03131"/>
+<rect x="1012" y="530.0" width="28" height="6" fill="#e03131"/>
+<rect x="1012" y="542.0" width="28" height="6" fill="#7a4a1c"/>
+<text x="1002" y="548.0" text-anchor="end" font-size="22" font-weight="bold" fill="#7a1f8f">220 Ω</text>
+<circle cx="1026" cy="460" r="9" fill="#8c8c8c" stroke="#222" stroke-width="2"/>
+<circle cx="1026" cy="620" r="9" fill="#8c8c8c" stroke="#222" stroke-width="2"/>
+<text x="722" y="270" text-anchor="middle" font-size="20" font-weight="bold" fill="#8a6a00">Cột A</text>
+<text x="1056" y="270" text-anchor="middle" font-size="20" font-weight="bold" fill="#7a1f8f">Cột B</text>
+<rect x="1290" y="200" width="270" height="440" rx="14" fill="#2b2b2b"/>
+<text x="1425" y="460" text-anchor="middle" font-size="26" font-weight="bold" fill="#fff">Cảm biến khe</text>
+<text x="1425" y="490" text-anchor="middle" font-size="18" fill="#bbbbbb">số = số chân</text>
+<rect x="1308" y="237" width="26" height="26" rx="4" fill="#2f9e44"/>
+<text x="1344" y="258" font-size="22" font-weight="bold" fill="#fff">3 XANH LÁ</text>
+<rect x="1308" y="327" width="26" height="26" rx="4" fill="#9c36b5"/>
+<text x="1344" y="348" font-size="22" font-weight="bold" fill="#fff">1 TÍM</text>
+<rect x="1308" y="547" width="26" height="26" rx="4" fill="#1c64c4"/>
+<text x="1344" y="568" font-size="22" font-weight="bold" fill="#fff">4 XANH DƯƠNG</text>
+<rect x="1308" y="587" width="26" height="26" rx="4" fill="#d0d0d0"/>
+<text x="1344" y="608" font-size="22" font-weight="bold" fill="#fff">2 TRẮNG</text>
+<path d="M1290 250H774V300" fill="none" stroke="#2f9e44" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="774" cy="300" r="9" fill="#2f9e44" stroke="#222" stroke-width="2"/>
+<path d="M1290 340H1026" fill="none" stroke="#9c36b5" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="1026" cy="340" r="9" fill="#9c36b5" stroke="#222" stroke-width="2"/>
+<path d="M1290 560H1100V660" fill="none" stroke="#1c64c4" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="1100" cy="660" r="9" fill="#1c64c4" stroke="#222" stroke-width="2"/>
+<path d="M1290 600H1130V660" fill="none" stroke="#c8c8c8" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="1130" cy="660" r="9" fill="#c8c8c8" stroke="#222" stroke-width="2"/>
+<rect x="40" y="780" width="1520" height="196" rx="14" fill="#fff7d6" stroke="#f2b705" stroke-width="2"/>
+<text x="66" y="822" font-size="23"><tspan font-weight="bold" fill="#8a6a00">Cột A (vàng) = nút D2:</tspan><tspan fill="#1b232c"> 3 thứ cắm chung 1 cột dọc nên tự nối với nhau: dây từ D2 + dây XANH LÁ + 1 chân điện trở 10k.</tspan></text>
+<text x="66" y="866" font-size="23"><tspan font-weight="bold" fill="#8a6a00">Chân kia của 10k:</tspan><tspan fill="#1b232c"> cắm hàng + (5V). Nhờ vậy D2 bình thường ở mức cao; tia sáng lọt qua khe đĩa kéo nó xuống thấp.</tspan></text>
+<text x="66" y="910" font-size="23"><tspan font-weight="bold" fill="#7a1f8f">Cột B (tím) = LED:</tspan><tspan fill="#1b232c"> dây TÍM + 1 chân điện trở 220 Ω; chân kia của 220 Ω cắm hàng + (5V).</tspan></text>
+<text x="66" y="954" font-size="23"><tspan font-weight="bold" fill="#1c64c4">TRẮNG, XANH DƯƠNG:</tspan><tspan fill="#1b232c"> cắm thẳng hàng − (GND). Chân 5V và GND của UNO cắm vào hàng + và hàng −.</tspan></text>
+</svg>
