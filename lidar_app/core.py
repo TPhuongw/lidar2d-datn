@@ -80,6 +80,7 @@ class Mapper:
         # thong ke
         self.n_frames = self.n_idx = 0
         self.t_last_frame = self.t_last_idx = None
+        self.last_n = None                     # so thu tu khung moi nhat da nhan
 
     def add_frames(self, items, t_arr):
         if not items:
@@ -88,6 +89,7 @@ class Mapper:
             self.frames.extend(items)
             self.n_frames += len(items); self.t_last_frame = t_arr
             self.cf.add(items[-1][0], t_arr)
+            self.last_n = items[-1][0]
 
     def add_index(self, remote, t_arr):
         with self.lock:
@@ -118,6 +120,8 @@ class Mapper:
                     self.done_key = key
                     continue
                 i0, i1 = I[j], I[j + 1]
+                if tf(self.last_n) < i1:         # khung cuoi vong chua ve het -> cho lan goi sau
+                    break
                 d = np.diff(I[max(0, j - 5):j + 2])
                 T = float(np.median(d))
                 while self.frames and tf(self.frames[0][0]) < i0:
