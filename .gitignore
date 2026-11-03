@@ -18,3 +18,5 @@ fp-info-cache
 .DS_Store
 Thumbs.db
 desktop.ini
+# Ngoai le: log quan trong copy vao data/ thi DUOC dua len kho (de lam o nha bang phat lai)
+!data/log_*/
