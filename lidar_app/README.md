@@ -26,6 +26,13 @@ python app.py
 2. Chọn **Trực tiếp**, chọn cổng TF03 (FT232) và UNO → **Bắt đầu**. Động cơ tự quay theo ô *Tốc độ quay*.
 3. Dữ liệu thô được ghi vào `log_<ngày giờ>/` cạnh `app.py` → phát lại được bất kỳ lúc nào.
 
+## Đổi baud và tần số TF03
+Bấm **Dừng** trước, rồi dùng mục **TF03**. **Dò TF03** tìm baud hiện tại và đo tần số thật. Điều kiện: baud ≥ 112 × Hz.
+- **Tăng tần số:** đổi baud trước nếu baud hiện tại chưa đủ. **Đặt baud** → rút nguồn TF03, cắm lại → **Dò TF03** → **Đặt tần số**.
+- **Giảm baud:** giảm tần số trước, rồi mới **Đặt baud**.
+
+App từ chối các tổ hợp sai điều kiện trên. Cấu hình được lưu vào TF03. Trên 1000 Hz chưa được kiểm chứng.
+
 ## Quy trình giám sát
 1. Chỉnh **r0**, **Xoay**, **Đảo chiều** cho bản đồ khớp phòng thật. **Làm bước này trước khi vẽ vùng cấm**, vì vùng cấm vẽ theo tọa độ x, y.
 2. **Vẽ vùng cấm**: bấm nút, bấm chuột trái lên bản đồ để thêm từng đỉnh, bấm nút lần nữa để kết thúc.
@@ -41,5 +48,6 @@ python app.py
 
 ## Giới hạn hiện tại
 - Góc tính theo thời gian (PC + UNO), chưa phải STM32: dùng để **trình diễn**, không dùng làm số liệu đánh giá độ chính xác.
-- Chưa có: đo bằng chuột, theo dõi vật thể, ghép nhiều LiDAR, điều khiển TF03 trong app.
+- Chưa có: đo bằng chuột, theo dõi vật thể, ghép nhiều LiDAR.
+- Mục **TF03** mới thử với TF03 giả lập, chưa thử với cảm biến thật.
 - Đã chạy thử với log giả lập (phát lại). **Chưa chạy chế độ Trực tiếp với phần cứng thật.**

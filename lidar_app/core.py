@@ -2,6 +2,7 @@
 core.py - Loi xu ly du lieu LiDAR 2D (khong phu thuoc giao dien).
 
   parse_tf03   : tach khung TF03 9 byte tu luong byte
+  tf03_probe / tf03_set_rate / tf03_set_baud : do baud, dat tan so, dat baud TF03
   ClockSync    : khop dong ho nguon (so thu tu khung / micros UNO) sang dong ho PC theo bien duoi
   Mapper       : gan goc cho tung khung theo moc 0 do, gom thanh tung vong quet (Scan)
   LiveSource   : doc that tu TF03 (FT232) + UNO, ghi log
@@ -9,7 +10,7 @@ core.py - Loi xu ly du lieu LiDAR 2D (khong phu thuoc giao dien).
 
 Khi co STM32 chi can them mot Source moi tra ve thang (goc, khoang cach); Mapper/giao dien giu nguyen.
 """
-import collections, csv, math, os, re, threading, time
+import collections, csv, math, os, re, struct, threading, time
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -28,6 +29,99 @@ def parse_tf03(buf):
             bad += 1
         i += 1
     return out, buf[i:], bad
+
+
+# ------------------------------------------------------------------ cau hinh TF03 (chi khi cong dang ranh)
+TF03_BAUDS = (115200, 230400, 460800, 921600)
+TF03_RATES = (100, 200, 500, 1000, 2000, 5000)   # tren 1000 Hz chua kiem chung voi con nay
+TF03_BAUD_PER_HZ = 112                           # baud >= 112 x Hz, vuot muc nay TF03 qua tai va bo lenh
+
+
+def _tf03_cmd(cmd_id, payload=b""):
+    body = bytes([0x5A, 4 + len(payload), cmd_id]) + bytes(payload)
+    return body + bytes([sum(body) & 0xFF])
+
+
+def _tf03_send(ser, cmd, wait=0.4):
+    """Gui lenh, tra ve cac khung phan hoi 5A hop le (bo qua khung du lieu 59 59)."""
+    ser.reset_input_buffer()
+    ser.write(cmd)
+    buf, t_end = bytearray(), time.perf_counter() + wait
+    while time.perf_counter() < t_end:
+        buf += ser.read(max(1, ser.in_waiting))
+    replies, i = [], 0
+    while True:
+        i = buf.find(b"\x5A", i)
+        if i < 0 or i + 2 > len(buf):
+            return replies
+        n = buf[i + 1]
+        if 4 <= n <= 16 and i + n <= len(buf) and (sum(buf[i:i + n - 1]) & 0xFF) == buf[i + n - 1]:
+            replies.append(bytes(buf[i:i + n])); i += n
+        else:
+            i += 1
+
+
+def _tf03_save(ser):
+    """Luu cau hinh. True neu TF03 tra loi 5A 05 11 00 70."""
+    return any(r[2] == 0x11 and r[3] == 0 for r in _tf03_send(ser, _tf03_cmd(0x11)) if len(r) >= 5)
+
+
+def tf03_measure(ser, sec=1.0):
+    """Do toc do khung that. Tra ve (khung/s, so khung loi)."""
+    ser.reset_input_buffer()
+    buf, n, bad, t0 = bytearray(), 0, 0, time.perf_counter()
+    while time.perf_counter() - t0 < sec:
+        buf += ser.read(max(1, ser.in_waiting))
+        frames, rest, b = parse_tf03(buf)
+        buf = bytearray(rest); n += len(frames); bad += b
+    return n / sec, bad
+
+
+def tf03_probe(port, bauds=TF03_BAUDS, sec=0.4):
+    """Do baud hien tai cua TF03. Tra ve (baud, khung/s) hoac None."""
+    import serial
+    for baud in bauds:
+        with serial.Serial(port, baud, timeout=0.05) as ser:
+            rate, bad = tf03_measure(ser, sec)
+        if rate * sec >= 10 and rate * sec > 10 * bad:   # sai baud chi con vai khung trung checksum ngau nhien
+            return baud, rate
+    return None
+
+
+def tf03_set_rate(port, baud, hz):
+    """Dat va luu tan so. Tra ve (da nhan lenh luu, khung/s do lai, so khung loi)."""
+    import serial
+    if hz not in TF03_RATES:
+        raise ValueError("Tần số %d Hz không nằm trong danh sách cho phép." % hz)
+    if hz * TF03_BAUD_PER_HZ > baud:
+        raise ValueError("%d Hz cần baud ≥ %d, hiện là %d. Hãy đổi baud trước." % (hz, hz * TF03_BAUD_PER_HZ, baud))
+    with serial.Serial(port, baud, timeout=0.05) as ser:
+        _tf03_send(ser, _tf03_cmd(0x03, struct.pack("<H", hz)))
+        saved = _tf03_save(ser)
+        time.sleep(0.2)
+        rate, bad = tf03_measure(ser)
+    return saved, rate, bad
+
+
+def tf03_set_baud(port, baud, new_baud):
+    """Dat va luu baud moi; chi co hieu luc sau khi rut nguon TF03. Tra ve True neu TF03 nhan lenh luu."""
+    import serial
+    if new_baud not in TF03_BAUDS:
+        raise ValueError("Baud %d không nằm trong danh sách cho phép." % new_baud)
+    with serial.Serial(port, baud, timeout=0.05) as ser:
+        rate, _ = tf03_measure(ser, 0.5)
+        if rate == 0:
+            raise ValueError("Không nhận được dữ liệu TF03 ở %d baud. Hãy bấm Dò TF03 trước." % baud)
+        if rate * TF03_BAUD_PER_HZ > new_baud * 1.02:     # chua 2 % vi TF03 thuc te chay nhanh hon danh dinh
+            raise ValueError("TF03 đang chạy khoảng %.0f Hz, %d baud không đủ. Hãy giảm tần số trước." % (rate, new_baud))
+        _tf03_send(ser, _tf03_cmd(0x06, struct.pack("<I", new_baud)))
+        time.sleep(0.2)
+        saved = _tf03_save(ser)
+        if not saved:                                     # phong khi TF03 da doi baud ngay
+            ser.baudrate = new_baud
+            time.sleep(0.2)
+            saved = _tf03_save(ser)
+    return saved
 
 
 # ------------------------------------------------------------------ dong bo dong ho

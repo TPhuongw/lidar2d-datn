@@ -6,6 +6,7 @@ Chuc nang:
          chinh r0 / offset / chieu / loc diem ngay khi dang chay; cong don N vong; luu anh + CSV.
   Dot 2: ve vung cam bang chuot, hoc nen, gom cum vat the, bao dong (mau do + tieng beep),
          nhat ky su kien kem anh chup.
+  Dot 3 (mot phan): do baud, dat baud va tan so TF03 khi dang dung.
 
 Cai dat:  pip install PySide6 pyqtgraph pyserial numpy
 Chay:     python app.py
@@ -22,7 +23,7 @@ import detect
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SETTINGS = os.path.join(HERE, "settings.json")
-DEFAULTS = dict(tf_port="COM12", uno_port="COM10", rps=1.0, r0=0.0, offset=0.0, dir=1, maxcm=3000, minstr=0,
+DEFAULTS = dict(tf_port="COM12", uno_port="COM10", tf_baud=115200, tf_hz=1000, rps=1.0, r0=0.0, offset=0.0, dir=1, maxcm=3000, minstr=0,
                 accum=1, color="cường độ", view=5.0, zone=[], margin=0.15, min_size=0.10, on_revs=3,
                 learn_revs=20, replay_dir="", replay_speed=1.0)
 
@@ -128,6 +129,26 @@ class MainWindow(QtWidgets.QMainWindow):
         h2.addWidget(self.bt_start); h2.addWidget(self.bt_pause); f.addRow(h2)
         lay.addWidget(g)
 
+        # --- cau hinh TF03
+        g = QtWidgets.QGroupBox("TF03 (bấm Dừng trước khi đổi)"); f = QtWidgets.QFormLayout(g)
+        self.cb_baud = QtWidgets.QComboBox(); self.cb_baud.addItems([str(b) for b in core.TF03_BAUDS])
+        self.cb_baud.setCurrentText(str(self.cfg["tf_baud"]))
+        f.addRow("Baud hiện tại", self.cb_baud)
+        bt_probe = QtWidgets.QPushButton("Dò TF03"); bt_probe.clicked.connect(self.tf03_probe)
+        self.lb_tf = QtWidgets.QLabel("-"); self.lb_tf.setWordWrap(True)
+        f.addRow(bt_probe, self.lb_tf)
+        h = QtWidgets.QHBoxLayout()
+        self.cb_hz = QtWidgets.QComboBox(); self.cb_hz.addItems([str(r) for r in core.TF03_RATES])
+        self.cb_hz.setCurrentText(str(self.cfg["tf_hz"]))
+        bt_hz = QtWidgets.QPushButton("Đặt tần số"); bt_hz.clicked.connect(self.tf03_set_rate)
+        h.addWidget(self.cb_hz); h.addWidget(bt_hz); f.addRow("Tần số (Hz)", h)
+        h = QtWidgets.QHBoxLayout()
+        self.cb_newbaud = QtWidgets.QComboBox(); self.cb_newbaud.addItems([str(b) for b in core.TF03_BAUDS])
+        self.cb_newbaud.setCurrentText(str(self.cfg["tf_baud"]))
+        bt_baud = QtWidgets.QPushButton("Đặt baud"); bt_baud.clicked.connect(self.tf03_set_baud)
+        h.addWidget(self.cb_newbaud); h.addWidget(bt_baud); f.addRow("Baud mới", h)
+        lay.addWidget(g)
+
         # --- trang thai
         g = QtWidgets.QGroupBox("2. Trạng thái"); grid = QtWidgets.QGridLayout(g)
         self.st = {}
@@ -221,7 +242,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.src = core.ReplaySource(self.mapper, self.le_dir.text(), float(self.cb_speed.currentText()))
             else:
                 self.src = core.LiveSource(self.mapper, self.cb_tf.currentText(), self.cb_uno.currentText(),
-                                           self.sp_rps.value(), logdir=os.path.join(HERE, time.strftime("log_%Y%m%d_%H%M%S")))
+                                           self.sp_rps.value(), tf_baud=int(self.cb_baud.currentText()),
+                                           logdir=os.path.join(HERE, time.strftime("log_%Y%m%d_%H%M%S")))
             self.src.start()
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Lỗi", str(e)); self.src = None; return
@@ -231,6 +253,51 @@ class MainWindow(QtWidgets.QMainWindow):
         if isinstance(self.src, core.ReplaySource):
             self.src.paused = not self.src.paused
             self.bt_pause.setText("Tiếp tục" if self.src.paused else "Tạm dừng")
+
+    # ------------------------------------------------------------ cau hinh TF03
+    def _tf03_run(self, fn, *args):
+        """Chay lenh cau hinh tren cong TF03. Tra ve (ok, ket qua); cong dang dung thi tu choi."""
+        if self.src:
+            QtWidgets.QMessageBox.warning(self, "TF03", "Hãy bấm Dừng trước, vì cổng TF03 đang được dùng.")
+            return False, None
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            return True, fn(self.cb_tf.currentText(), *args)
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "TF03", str(e))
+            return False, None
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+
+    def tf03_probe(self):
+        ok, res = self._tf03_run(core.tf03_probe)
+        if not ok:
+            return
+        if res is None:
+            self.lb_tf.setText("Không thấy dữ liệu TF03 ở các baud đã thử.")
+            return
+        self.cb_baud.setCurrentText(str(res[0]))
+        self.lb_tf.setText("%d baud, khoảng %.0f Hz" % res)
+
+    def tf03_set_rate(self):
+        hz = int(self.cb_hz.currentText())
+        if hz > 1000 and QtWidgets.QMessageBox.question(self, "TF03", "Trên 1000 Hz chưa được kiểm chứng với TF03 này. Vẫn đặt?") \
+                != QtWidgets.QMessageBox.Yes:
+            return
+        ok, res = self._tf03_run(core.tf03_set_rate, int(self.cb_baud.currentText()), hz)
+        if ok:
+            saved, rate, bad = res
+            self.lb_tf.setText("Đo lại: khoảng %.0f Hz, %d khung lỗi%s" % (rate, bad, "" if saved else ". TF03 không xác nhận lưu!"))
+
+    def tf03_set_baud(self):
+        new = int(self.cb_newbaud.currentText())
+        if QtWidgets.QMessageBox.question(self, "TF03", "Đổi TF03 sang %d baud? Sau đó phải rút nguồn TF03 rồi cắm lại." % new) \
+                != QtWidgets.QMessageBox.Yes:
+            return
+        ok, saved = self._tf03_run(core.tf03_set_baud, int(self.cb_baud.currentText()), new)
+        if ok:
+            self.lb_tf.setText("Đã gửi lệnh. Rút nguồn TF03, cắm lại, rồi bấm Dò TF03." if saved
+                               else "TF03 không xác nhận lưu. Rút nguồn, cắm lại, rồi bấm Dò TF03 để kiểm tra.")
 
     # ------------------------------------------------------------ vong lap chinh
     def on_tick(self):
@@ -405,6 +472,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.src:
             self.src.stop()
         self.cfg.update(tf_port=self.cb_tf.currentText(), uno_port=self.cb_uno.currentText(), rps=self.sp_rps.value(),
+                        tf_baud=int(self.cb_baud.currentText()), tf_hz=int(self.cb_hz.currentText()),
                         r0=self.sp_r0.value(), offset=self.sp_off.value(), dir=-1 if self.ck_dir.isChecked() else 1,
                         maxcm=self.sp_max.value(), minstr=self.sp_str.value(), accum=self.sp_acc.value(),
                         color=self.cb_color.currentText(), zone=self.det.zone, margin=self.sp_margin.value(),
