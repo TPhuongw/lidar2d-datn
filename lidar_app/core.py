@@ -33,7 +33,7 @@ def parse_tf03(buf):
 
 # ------------------------------------------------------------------ cau hinh TF03 (chi khi cong dang ranh)
 TF03_BAUDS = (115200, 230400, 460800, 921600)
-TF03_RATES = (100, 200, 500, 1000, 2000, 5000)   # tren 1000 Hz chua kiem chung voi con nay
+TF03_RATES = (100, 200, 500, 1000, 2000, 5000)   # da chay that toi 2000 Hz; 5000 Hz chua kiem chung
 TF03_BAUD_PER_HZ = 112                           # baud >= 112 x Hz, vuot muc nay TF03 qua tai va bo lenh
 
 
@@ -128,16 +128,16 @@ def tf03_set_baud(port, baud, new_baud):
 class ClockSync:
     """t_PC = a + b*remote + tre (tre >= 0). b: hoi quy; a: bien duoi trong cua so gan nhat."""
 
-    def __init__(self, n=400):
+    def __init__(self, n=400, every=10):         # every: cap nhat a, b sau moi bay nhieu mau
         self.r, self.l = collections.deque(maxlen=n), collections.deque(maxlen=n)
-        self.base = self.a = self.b = None
+        self.base = self.a = self.b = None; self.every = every
         self.cnt = 0
 
     def add(self, remote, local):
         if self.base is None:
             self.base = remote
         self.r.append(remote - self.base); self.l.append(local); self.cnt += 1
-        if len(self.r) >= 5 and (self.b is None or self.cnt % 10 == 0):
+        if len(self.r) >= 5 and (self.b is None or self.cnt % self.every == 0):
             R, L = np.array(self.r), np.array(self.l)
             if np.ptp(R) > 0:
                 self.b = float(np.polyfit(R, L, 1)[0])
@@ -167,7 +167,7 @@ class Mapper:
     def __init__(self):
         self.frames = collections.deque()      # (n, dist, strength)
         self.idx = []                          # moc 0 do theo dong ho nguon
-        self.cf, self.ci = ClockSync(400), ClockSync(30)
+        self.cf, self.ci = ClockSync(400), ClockSync(60, every=1)   # moc thua (vai moc/s) nen cap nhat moi moc
         self.done_key = None                   # moc dau cua vong da xu ly gan nhat
         self.seq = 0
         self.lock = threading.Lock()
