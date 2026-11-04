@@ -146,10 +146,12 @@ class Detector:
         self.alarm = False
         self._on = self._off = 0
         self.events = []                # (thoi gian, kieu, mo ta)
+        self.all_objs = []              # cum khac nen tren toan phong (ca ngoai vung cam), de theo doi
 
     def step(self, xy):
         """xy: dict tu core.to_xy. Tra ve (objs, mask_fg, alarm_moi_bat)."""
         x, y, r, ang = xy["x"], xy["y"], xy["r"], xy["ang"]
+        self.all_objs = []
         if self.bg.learning_left > 0:
             done = self.bg.feed(ang, r)
             if done:
@@ -159,6 +161,8 @@ class Detector:
             self.alarm, self._on, self._off = False, 0, 0
             return [], np.zeros(len(x), bool), False
         fg = self.bg.foreground(ang, r, self.margin) if self.use_bg else np.ones(len(x), bool)
+        if self.use_bg:                                  # khong co nen thi tuong cung la cum, khong theo doi duoc
+            self.all_objs = cluster(ang[fg], x[fg], y[fg], self.gap, self.min_pts, self.min_size)
         if len(self.zone) >= 3:
             fg &= point_in_polygon(x, y, self.zone)
         else:
@@ -178,6 +182,128 @@ class Detector:
                 self.alarm = False
                 self.events.append((time.time(), "HẾT", "Vùng cấm trống"))
         return objs, fg, newly
+
+
+@dataclass
+class Track:
+    id: int
+    t: list
+    x: list
+    y: list
+    size: float
+    in_zone: bool
+    hits: int = 1
+    vx: float = 0.0
+    vy: float = 0.0
+    speed: float = None                 # m/s, None khi chua du du lieu
+    still_since: float = None           # thoi diem bat dau dung yen
+    zone_since: float = None            # thoi diem vao vung cam
+
+
+class Tracker:
+    """Noi cum giua cac vong thanh doi tuong: toc do, huong, thoi gian dung, quy dao.
+
+    Moi cum co thoi diem rieng (t moc + a0/360 * T) vi tia quet toi moi huong vao mot luc khac nhau.
+    Khong anh huong logic bao dong cua Detector.
+    Tam cum la tam mat nhin thay, khong phai tam vat. Toc do chua duoc doi chieu voi phep do doc lap.
+    """
+
+    def __init__(self, gate=0.4, vmax=3.0, merge=0.35, miss_s=1.5, confirm=3, win_s=2.0, still_r=0.15, still_v=0.1, hist_s=30.0):
+        self.gate, self.vmax, self.merge = gate, vmax, merge    # m, m/s, m
+        self.miss_s, self.confirm = miss_s, confirm             # bo sau bay nhieu s khong thay; xac nhan sau bay nhieu lan
+        self.win_s, self.still_r, self.still_v, self.hist_s = win_s, still_r, still_v, hist_s
+        self.reset()
+
+    def reset(self):
+        self.tracks, self.next_id = [], 1
+
+    def confirmed(self):
+        return [tr for tr in self.tracks if tr.hits >= self.confirm]
+
+    def _measure(self, sc, objs):
+        """Gop cum sat nhau (mot vat bi tach, vi du tay va than) thanh mot phep do (t, x, y, size)."""
+        groups = []
+        for o in objs:
+            hit = [g for g in groups if any(np.min(np.hypot(p.xs[:, None] - o.xs, p.ys[:, None] - o.ys)) < self.merge for p in g)]
+            for g in hit:
+                groups.remove(g)
+            groups.append(sum(hit, []) + [o])
+        out = []
+        for g in groups:
+            xs, ys = np.concatenate([o.xs for o in g]), np.concatenate([o.ys for o in g])
+            a0 = min(o.a0 for o in g)
+            out.append((sc.t + a0 / 360.0 * sc.period, float(xs.mean()), float(ys.mean()), float(math.hypot(np.ptp(xs), np.ptp(ys)))))
+        return out
+
+    def _refresh(self, tr):
+        t = np.array(tr.t)
+        # it nhat 3 diem gan nhat: quay cham hoac mat vai vong thi cua so thoi gian co the chi con 2 diem
+        i0 = max(0, min(int(np.searchsorted(t, t[-1] - self.win_s)), len(t) - 3))
+        tw, xw, yw = t[i0:], np.array(tr.x)[i0:], np.array(tr.y)[i0:]
+        span = tw[-1] - tw[0]
+        if len(tw) >= 3 and span >= 1.0:
+            tr.vx, tr.vy = float(np.polyfit(tw, xw, 1)[0]), float(np.polyfit(tw, yw, 1)[0])
+            tr.speed = math.hypot(tr.vx, tr.vy)
+            spread = np.max(np.hypot(xw - xw.mean(), yw - yw.mean()))
+            # tam cum dao dong theo mat nhin thay, nen cho phep rong hon neu tam khong troi di dau;
+            # gioi han 2 * still_r de nguoi di qua lai (van toc trung binh ~ 0) khong bi tinh la dung
+            still = span >= 1.5 and (spread < self.still_r or (tr.speed < self.still_v and spread < 2 * self.still_r))
+            tr.still_since = (tr.still_since if tr.still_since is not None else float(tw[0])) if still else None
+        keep = t >= t[-1] - self.hist_s
+        tr.t, tr.x, tr.y = [v for v, c in zip(tr.t, keep) if c], [v for v, c in zip(tr.x, keep) if c], [v for v, c in zip(tr.y, keep) if c]
+
+    def update(self, sc, objs, zone=()):
+        """Cap nhat bang mot vong quet. Tra ve danh sach doi tuong da xac nhan."""
+        meas = self._measure(sc, objs)
+        pairs = []
+        for i, tr in enumerate(self.tracks):
+            for j, (t, x, y, _) in enumerate(meas):
+                dt = max(t - tr.t[-1], 0.0)
+                d = math.hypot(x - tr.x[-1] - tr.vx * dt, y - tr.y[-1] - tr.vy * dt)
+                # doi tuong da co huong: du doan tot hon nen cua so hep hon
+                if d <= self.gate + self.vmax * dt * (1.0 if tr.hits < self.confirm else 0.5):
+                    pairs.append((d, i, j))
+        used_t, used_m = set(), set()
+        for d, i, j in sorted(pairs):
+            if i in used_t or j in used_m:
+                continue
+            used_t.add(i); used_m.add(j)
+            tr, (t, x, y, size) = self.tracks[i], meas[j]
+            tr.t.append(t); tr.x.append(x); tr.y.append(y); tr.size = size; tr.hits += 1
+            self._refresh(tr)
+        for j, (t, x, y, size) in enumerate(meas):
+            if j not in used_m:
+                self.tracks.append(Track(self.next_id, [t], [x], [y], size, False))
+                self.next_id += 1
+        now = sc.t + sc.period
+        self.tracks = [tr for tr in self.tracks if now - tr.t[-1] <= self.miss_s]
+        for tr in self.tracks:
+            tr.in_zone = len(zone) >= 3 and bool(point_in_polygon(np.array([tr.x[-1]]), np.array([tr.y[-1]]), zone)[0])
+            tr.zone_since = (tr.zone_since if tr.zone_since is not None else tr.t[-1]) if tr.in_zone else None
+        return self.confirmed()
+
+
+class TrackLog:
+    """Ghi vi tri va toc do doi tuong da xac nhan, moi lan do mot dong. t cung dong ho voi t_pc."""
+    HEAD = "id,t,x_m,y_m,vx_m_s,vy_m_s,v_m_s,dung_s,trong_vung,trong_vung_s,size_m\n"
+
+    def __init__(self, path):
+        self.path = path
+
+    def write(self, sc, tracks):
+        rows = []
+        for tr in tracks:
+            if tr.t[-1] < sc.t:                         # vong nay khong thay doi tuong, khong co phep do moi
+                continue
+            t = tr.t[-1]
+            rows.append("%d,%.6f,%.3f,%.3f,%.3f,%.3f,%s,%s,%d,%s,%.3f\n" % (
+                tr.id, t, tr.x[-1], tr.y[-1], tr.vx, tr.vy, "" if tr.speed is None else "%.3f" % tr.speed,
+                "" if tr.still_since is None else "%.2f" % (t - tr.still_since), tr.in_zone,
+                "" if tr.zone_since is None else "%.2f" % (t - tr.zone_since), tr.size))
+        if rows:
+            new = not os.path.exists(self.path)
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write((self.HEAD if new else "") + "".join(rows))
 
 
 class AlarmLog:

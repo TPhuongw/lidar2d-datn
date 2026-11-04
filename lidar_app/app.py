@@ -75,6 +75,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.n_ev_shown = 0
         self.rate_hist = []                 # (t, n_frames) tinh toc do khung
         self.alog = None                    # log moc thoi gian bao dong
+        self.tracker, self.tlog = detect.Tracker(), None
         self._save_timer = QtCore.QTimer(self, singleShot=True, interval=500, timeout=self._save_settings)
         self._build_ui()
         self._apply_detect_params()
@@ -222,6 +223,8 @@ class MainWindow(QtWidgets.QMainWindow):
         f.addRow(self.lb_alarm)
         self.lst = QtWidgets.QListWidget(); self.lst.setMaximumHeight(140)
         f.addRow(self.lst)
+        self.lb_tracks = QtWidgets.QLabel("Đối tượng: chưa có"); self.lb_tracks.setWordWrap(True)
+        f.addRow(self.lb_tracks)
         lay.addWidget(g)
         lay.addStretch(1)
 
@@ -267,6 +270,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.draft = detect.transform_zone(self.draft, *self._cal, *new)
             self.draft_item.setData([p[0] for p in self.draft], [p[1] for p in self.draft])
         self._cal = new
+        self.tracker.reset()                            # toa do cu khong con noi tiep voi toa do moi
         self._draw_zone()
 
     def _fill_ports(self):
@@ -297,6 +301,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.src.start()
             name = "alarm_replay.csv" if isinstance(self.src, core.ReplaySource) else "alarm.csv"   # phat lai khong tron voi so do that
             self.alog = detect.AlarmLog(os.path.join(self.src.logdir, name))
+            self.tlog = detect.TrackLog(os.path.join(self.src.logdir, name.replace("alarm", "tracks")))
+            self.tracker.reset()
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Lỗi", str(e)); self.src = None; return
         self.bt_start.setText("Dừng")
@@ -365,6 +371,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if was_learning and self.det.bg.ready() and isinstance(self.src, core.LiveSource):
                 self._save_bg(sc)                       # phat lai khong ghi de nen cua phan cung
             self.alog.on_scan(sc, objs, newly, self.det, t_ready, self.src.now())
+            self.tlog.write(sc, self.tracker.update(sc, self.det.all_objs, self.det.zone))
             xy["fg"], xy["objs"] = fg, objs
             self.last_scan = sc
             self.recent.append((sc, xy))
@@ -417,6 +424,21 @@ class MainWindow(QtWidgets.QMainWindow):
             c.setPen(pg.mkPen((220, 30, 30), width=2)); self.plot.addItem(c); self.obj_items.append(c)
             t = pg.TextItem("%.2f m" % o.size, color=(220, 30, 30), anchor=(0, 1)); t.setPos(o.cx + r, o.cy + r)
             self.plot.addItem(t); self.obj_items.append(t)
+        lines = []
+        for tr in self.tracker.confirmed():
+            col = (220, 30, 30) if tr.in_zone else (30, 90, 200)
+            path = pg.PlotDataItem(tr.x, tr.y, pen=pg.mkPen(col, width=2))
+            self.plot.addItem(path); self.obj_items.append(path)
+            lab = pg.TextItem(self._track_text(tr), color=col, anchor=(0, 0)); lab.setPos(tr.x[-1], tr.y[-1])
+            self.plot.addItem(lab); self.obj_items.append(lab)
+            lines.append("%s, rộng %.2f m%s" % (self._track_text(tr), tr.size, ", trong vùng %.0f s" % (tr.t[-1] - tr.zone_since) if tr.in_zone else ""))
+        self.lb_tracks.setText("Đối tượng: " + ("\n" + "\n".join(lines) if lines else "không có"))
+
+    @staticmethod
+    def _track_text(tr):
+        if tr.still_since is not None:
+            return "#%d đứng yên %.0f s" % (tr.id, tr.t[-1] - tr.still_since)
+        return "#%d %s" % (tr.id, "%.2f m/s" % tr.speed if tr.speed is not None else "đang đo")
 
     def _update_status(self):
         m, s = self.mapper, self.src

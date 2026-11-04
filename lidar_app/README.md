@@ -57,6 +57,19 @@ Mỗi lần chạy Trực tiếp, app ghi `alarm.csv` vào thư mục log; phát
 - Log không đo được lúc vật thực sự vào vùng. Khoảng này cần đo bằng camera hoặc cảm biến ngoài.
 - Khi phát lại, đồng hồ chỉ tiến theo từng nhịp giao diện nên `t_alarm`, `t_snap`, `t_shown` trùng nhau. Chỉ số của chế độ Trực tiếp mới dùng được để đánh giá các khâu này.
 
+## Theo dõi đối tượng
+Sau khi học nền, app nối các cụm khác nền giữa các vòng thành đối tượng, trên toàn phòng chứ không chỉ trong vùng cấm. Mỗi cụm dùng thời điểm tia quét tới nó, không dùng thời điểm đầu vòng. Đối tượng được xác nhận sau 3 lần thấy và bị bỏ sau 1,5 s không thấy.
+
+- **Trên bản đồ:** quỹ đạo 30 s gần nhất, màu đỏ khi trong vùng cấm, xanh khi ngoài vùng, kèm số thứ tự và tốc độ hoặc thời gian đứng yên.
+- **Log:** `tracks.csv` khi chạy Trực tiếp, `tracks_replay.csv` khi phát lại. Mỗi lần đo một dòng, cột `t` cùng đồng hồ với `t_pc`.
+- Theo dõi không ảnh hưởng đến báo động. Đổi Xoay hoặc Đảo chiều thì đối tượng được đánh số lại.
+
+Giới hạn:
+- Tâm cụm là tâm mặt nhìn thấy, nên lệch về phía LiDAR so với tâm vật (khoảng 0,1 m với trụ bán kính 0,2 m trong log giả lập).
+- Tốc độ lấy từ cửa sổ khoảng 2 s nên phản ứng chậm khi vật đổi tốc độ.
+- Hai vật đi sát nhau dưới 0,35 m được tính là một.
+- Tốc độ mới được kiểm tra với quỹ đạo giả lập, chưa đối chiếu với phép đo thật trên phần cứng. Góc vẫn tính theo thời gian, nên chưa dùng làm số liệu đánh giá.
+
 ## Tham số phát hiện
 | Tham số | Ý nghĩa |
 |---|---|
@@ -66,6 +79,6 @@ Mỗi lần chạy Trực tiếp, app ghi `alarm.csv` vào thư mục log; phát
 
 ## Giới hạn hiện tại
 - Góc tính theo thời gian (PC + UNO), chưa phải STM32: dùng để **trình diễn**, không dùng làm số liệu đánh giá độ chính xác.
-- Chưa có: đo bằng chuột, theo dõi vật thể, ghép nhiều LiDAR.
+- Chưa có: đo bằng chuột, ghép nhiều LiDAR.
 - Từng nút của mục **TF03** mới được kiểm tra đủ với TF03 giả lập, chưa kiểm tra đủ với cảm biến thật.
 - Đã chạy chế độ Trực tiếp với phần cứng thật (UNO + TF03), xem `data/log_20261104_120106`. Bản đồ có thể lệch vài độ trong khoảng 30 s đầu; bản khớp mốc mới mới được phát lại trên log này, chưa chạy lại trên phần cứng.
