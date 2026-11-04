@@ -40,6 +40,14 @@ App từ chối các tổ hợp sai điều kiện trên. Cấu hình được l
 3. **Học nền** khi vùng cấm đang trống và bản đồ đã đứng yên (mặc định 20 vòng). Nền lưu theo góc thô nên không phụ thuộc Xoay. Học xong ở chế độ Trực tiếp, nền tự lưu vào `nen.npz`; phát lại không ghi đè file này. Mở app lần sau, bấm **Nạp nền đã lưu** nếu LiDAR chưa bị dời. App hỏi lại khi tốc độ quay lệch quá 5 % so với lúc học, và tự bù nếu r0 đã đổi. Chưa học nền thì app hiện CHƯA HỌC NỀN và không báo động, trừ khi tắt dùng nền.
 4. Khi có vật trong vùng cấm liên tiếp *N* vòng (mặc định 3): ô trạng thái chuyển đỏ, có tiếng beep, ghi nhật ký và lưu ảnh vào `su_kien/`.
 
+## Thông số phiên đo và an toàn dữ liệu
+Mỗi lần bấm **Bắt đầu**, app ghi `session.json` vào thư mục log (phát lại: `session_replay.json`, ghi đè mỗi lần phát):
+- `thong_so`: toàn bộ thông số lúc bắt đầu, gồm r0, Xoay, vùng cấm, các ngưỡng, baud, tốc độ quay.
+- `su_kien`: mọi thay đổi trong lúc chạy (`doi`, kèm giá trị cũ và mới, thời gian trễ tối đa khoảng 0,5 s), và các lần `hoc_nen`, `nap_nen`.
+- `bat_dau`, `ket_thuc`, `nguon`, `phien_ban` (phiên bản code theo git). `ket_thuc` rỗng nghĩa là app không được đóng bình thường.
+
+`tf03_raw.csv` được đẩy xuống ổ đĩa khoảng mỗi giây, `index.csv` sau mỗi mốc. App chết hoặc bị tắt ngang chỉ mất khoảng 1 s dữ liệu thô cuối. Mất điện đột ngột có thể mất nhiều hơn vì hệ điều hành còn giữ đệm.
+
 ## Log mốc thời gian báo động
 Mỗi lần chạy Trực tiếp, app ghi `alarm.csv` vào thư mục log; phát lại thì ghi `alarm_replay.csv`. Mỗi lần báo động là một dòng `BAO_DONG`, mỗi lần hết báo động là một dòng `HET`. Các mốc `t_*` dùng chung đồng hồ với `t_pc` trong `tf03_raw.csv`.
 
@@ -64,13 +72,18 @@ Sau khi học nền, app nối các cụm khác nền giữa các vòng thành �
 - **Log:** `tracks.csv` khi chạy Trực tiếp, `tracks_replay.csv` khi phát lại. Mỗi lần đo một dòng, cột `t` cùng đồng hồ với `t_pc`.
 - **Trên góc bản đồ và mục Trạng thái:** thời gian và số đối tượng đang có, trong đó bao nhiêu trong vùng cấm. Khi phát lại, thời gian hiện dạng `đã phát / tổng`; khi chạy Trực tiếp là thời gian đã chạy.
 - **Gộp đối tượng:** hai đối tượng cách nhau dưới *Gộp khi cách dưới* (mặc định 0,6 m) và lệch vận tốc dưới *Gộp khi lệch tốc độ dưới* (mặc định 0,25 m/s) liên tục 1,5 s thì tính là một, giữ số thứ tự cũ hơn và hiện `(gộp 2)`. Sau đó nếu một phần đi xa hơn 1,5 lần ngưỡng khoảng cách thì tách thành đối tượng mới. Đặt ngưỡng khoảng cách bằng 0 để tắt.
-- Theo dõi không ảnh hưởng đến báo động. Đổi Xoay hoặc Đảo chiều thì đối tượng được đánh số lại.
+- **Giữ vật biến mất:** LiDAR chỉ quét một mặt phẳng, nên vật thấp xuống dưới mặt quét (cúi, ngã) là không thấy nữa. Đối tượng tồn tại từ 3 s trở lên mà biến mất giữa vùng cấm (cách mép vùng từ 0,5 m, không đang đi ra, nằm trước nền từ 0,5 m) được giữ tối đa *Giữ vật biến mất* giây (mặc định 60 s, 0 = tắt). Trong lúc giữ, app báo `BÁO ĐỘNG: VẬT BIẾN MẤT TRONG VÙNG`, không báo vùng trống. Có vật xuất hiện lại trong bán kính 0,6 m thì nối lại, giữ số thứ tự và thời gian dừng. Bấm **Xác nhận vùng trống** để bỏ các vật đang giữ. `alarm.csv` có thêm dòng `MAT_TIN_HIEU`, `NOI_LAI`, `HET_GIU`.
+- **Bíp liên tục:** tiếng bíp ngắn, khác tiếng báo động, lặp mỗi 0,5 s khi còn điều kiện. Chọn trong ô **Bíp liên tục**: *Có vật trong vùng* (mặc định, tính cả vật đang giữ), *Có vật đang đi* (trên toàn phòng, bật từ 0,2 m/s, tắt dưới 0,1 m/s hoặc khi đứng yên), hoặc *Tắt*.
+- **Bảng lượt vào vùng cấm (mục 5):** tổng số lượt vào, số đối tượng khác nhau, số đang trong vùng, và từng lượt với thời điểm vào, ra tính từ lúc bấm Bắt đầu. Cùng một đối tượng ra rồi vào lại tính thêm một lượt. Lượt được ghi vào `luot_vao.csv` (phát lại: `luot_vao_replay.csv`) khi kết thúc. Bảng xóa khi bấm Bắt đầu hoặc **Xóa bảng**.
+- Theo dõi không ảnh hưởng đến cách bật báo động; chỉ có giữ vật làm báo động kết thúc muộn hơn. Đổi Xoay hoặc Đảo chiều thì đối tượng được đánh số lại và các vật đang giữ bị bỏ.
 
 Giới hạn:
 - Tâm cụm là tâm mặt nhìn thấy, nên lệch về phía LiDAR so với tâm vật (khoảng 0,1 m với trụ bán kính 0,2 m trong log giả lập).
 - Tốc độ lấy từ cửa sổ khoảng 2 s nên phản ứng chậm khi vật đổi tốc độ.
 - Hai vật đi sát nhau dưới 0,35 m được tính là một ngay từ khâu gom cụm. Số đối tượng vì vậy không phải số người.
 - Khi đối tượng đang ở trạng thái gộp, một vật lạ đi qua trong phạm vi 1,5 lần ngưỡng khoảng cách sẽ bị gom tạm vào.
+- Số lượt vào phụ thuộc vào tracking: mất đối tượng rồi tạo lại sẽ đếm thêm lượt, hai người sát nhau chỉ đếm một lượt. Số này chưa được đối chiếu với đếm tay.
+- Giữ vật chỉ là suy luận, LiDAR không thấy được vật khi đang giữ. Người rời đi mà tín hiệu mất giữa vùng (ví dụ qua cửa nằm trong vùng) cũng bị giữ, nên báo động kéo dài. Một người khác xuất hiện gần chỗ cũ sẽ bị nối nhầm vào đối tượng cũ. Các thời gian 60 s, 3 s và khoảng cách 0,5 m là giá trị tự chọn, chưa kiểm chứng.
 - Gộp đối tượng mới được kiểm tra với quỹ đạo tự tạo. Hai log phần cứng hiện có không có lần gộp nào.
 - Tốc độ mới được kiểm tra với quỹ đạo giả lập, chưa đối chiếu với phép đo thật trên phần cứng. Góc vẫn tính theo thời gian, nên chưa dùng làm số liệu đánh giá.
 

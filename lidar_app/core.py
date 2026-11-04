@@ -10,7 +10,7 @@ core.py - Loi xu ly du lieu LiDAR 2D (khong phu thuoc giao dien).
 
 Khi co STM32 chi can them mot Source moi tra ve thang (goc, khoang cach); Mapper/giao dien giu nguyen.
 """
-import collections, csv, math, os, re, struct, threading, time
+import collections, csv, json, math, os, re, struct, threading, time
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -244,6 +244,38 @@ def to_xy(scan, r0=0.0, offset_deg=0.0, direction=1, max_cm=3000, min_str=0):
     return dict(x=r * np.cos(th), y=r * np.sin(th), r=r, ang=a[ok], s=s[ok], ok=ok)
 
 
+# ------------------------------------------------------------------ thong so phien do
+class SessionLog:
+    """Ghi thong so cua mot phien do vao JSON, kem moi thay doi trong luc chay. t tinh tu luc bat dau (s)."""
+
+    def __init__(self, path, cfg, nguon, phien_ban=""):
+        self.path = path
+        self.d = dict(bat_dau=time.strftime("%Y-%m-%d %H:%M:%S"), ket_thuc=None, nguon=nguon, phien_ban=phien_ban,
+                      thong_so=json.loads(json.dumps(cfg)), su_kien=[])
+        self._write()
+
+    def _write(self):
+        tmp = self.path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(self.d, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, self.path)                     # app chet giua chung khong lam hong file cu
+
+    def diff(self, old, new, t):
+        old, new = json.loads(json.dumps(old)), json.loads(json.dumps(new))
+        ch = [dict(t=round(t, 2), kieu="doi", ten=k, cu=old.get(k), moi=new[k]) for k in new if old.get(k) != new[k]]
+        if ch:
+            self.d["su_kien"] += ch
+            self._write()
+
+    def note(self, kieu, t, **kw):
+        self.d["su_kien"].append(dict(t=round(t, 2), kieu=kieu, **kw))
+        self._write()
+
+    def end(self):
+        self.d["ket_thuc"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        self._write()
+
+
 # ------------------------------------------------------------------ nguon du lieu
 class LiveSource:
     """TF03 qua FT232 + UNO chay index_flag_test.ino. Ghi log vao logdir."""
@@ -274,9 +306,11 @@ class LiveSource:
         import serial
         ser = serial.Serial(self.tf_port, self.tf_baud, timeout=0.01)
         ser.reset_input_buffer()
-        buf, n = bytearray(), 0
+        buf, n, t_flush = bytearray(), 0, time.perf_counter()
         while not self.stop_ev.is_set():
             data = ser.read(max(1, ser.in_waiting))
+            if time.perf_counter() - t_flush >= 1.0:      # app chet thi chi mat toi da khoang 1 s du lieu tho
+                self.flog.flush(); t_flush = time.perf_counter()
             if not data:
                 continue
             t_arr = time.perf_counter()
@@ -316,7 +350,7 @@ class LiveSource:
                 else:
                     remote = t
                 self.m.add_index(remote, t)
-                self.ilog.write("%.6f,%.6f\n" % (remote, t))
+                self.ilog.write("%.6f,%.6f\n" % (remote, t)); self.ilog.flush()
             elif txt:
                 self.uno_lines.append(txt)
         try:

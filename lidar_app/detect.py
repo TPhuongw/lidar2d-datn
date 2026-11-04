@@ -34,6 +34,16 @@ def point_in_polygon(x, y, poly):
     return inside
 
 
+def poly_edge_dist(x, y, poly):
+    """Khoang cach tu diem toi canh gan nhat cua da giac (m)."""
+    best = math.inf
+    for (x1, y1), (x2, y2) in zip(poly, list(poly[1:]) + [poly[0]]):
+        dx, dy = x2 - x1, y2 - y1
+        u = max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / max(dx * dx + dy * dy, 1e-12)))
+        best = min(best, math.hypot(x - x1 - u * dx, y - y1 - u * dy))
+    return best
+
+
 def transform_zone(zone, off_old, dir_old, off_new, dir_new):
     """Doi dinh vung cam khi doi Xoay / Dao chieu de vung van o dung vi tri that so voi LiDAR.
     Xoay va lat giu nguyen duong thang nen chi can doi cac dinh. r0 khong lam vung thay doi."""
@@ -54,6 +64,8 @@ class Obj:
     xs: np.ndarray = field(repr=False, default=None)
     ys: np.ndarray = field(repr=False, default=None)
     a0: float = 0.0                     # goc tho nho nhat cua cum (do), de tinh thoi diem tia cham vat
+    ang: np.ndarray = field(repr=False, default=None)
+    gap: float = math.inf               # trung vi (nen - khoang cach): cum nam truoc nen bao xa (m)
 
 
 class Background:
@@ -129,7 +141,7 @@ def cluster(ang, x, y, gap=0.2, min_pts=3, min_size=0.1):
         cx_, cy_ = x[a:b], y[a:b]
         size = float(math.hypot(np.ptp(cx_), np.ptp(cy_)))
         if size >= min_size or b - a >= 3 * min_pts:
-            objs.append(Obj(float(cx_.mean()), float(cy_.mean()), size, b - a, cx_, cy_, float(a_[a])))
+            objs.append(Obj(float(cx_.mean()), float(cy_.mean()), size, b - a, cx_, cy_, float(a_[a]), a_[a:b]))
     return objs
 
 
@@ -147,6 +159,7 @@ class Detector:
         self._on = self._off = 0
         self.events = []                # (thoi gian, kieu, mo ta)
         self.all_objs = []              # cum khac nen tren toan phong (ca ngoai vung cam), de theo doi
+        self.hold = False               # True: con vat co the dang khuat duoi mat quet, chua duoc het bao dong
 
     def step(self, xy):
         """xy: dict tu core.to_xy. Tra ve (objs, mask_fg, alarm_moi_bat)."""
@@ -163,6 +176,9 @@ class Detector:
         fg = self.bg.foreground(ang, r, self.margin) if self.use_bg else np.ones(len(x), bool)
         if self.use_bg:                                  # khong co nen thi tuong cung la cum, khong theo doi duoc
             self.all_objs = cluster(ang[fg], x[fg], y[fg], self.gap, self.min_pts, self.min_size)
+            for o in self.all_objs:
+                b = (o.ang / self.bg.bin_deg).astype(int) % self.bg.nb
+                o.gap = float(np.median(self.bg.bg[b] - np.hypot(o.xs, o.ys)))
         if len(self.zone) >= 3:
             fg &= point_in_polygon(x, y, self.zone)
         else:
@@ -178,7 +194,7 @@ class Detector:
                                     "%d vật | lớn nhất %.2f m tại (%.2f, %.2f)" % (len(objs), big.size, big.cx, big.cy)))
         else:
             self._off += 1; self._on = 0
-            if self.alarm and self._off >= self.off_revs:
+            if self.alarm and self._off >= self.off_revs and not self.hold:
                 self.alarm = False
                 self.events.append((time.time(), "HẾT", "Vùng cấm trống"))
         return objs, fg, newly
@@ -201,6 +217,12 @@ class Track:
     merged: int = 0                     # so doi tuong khac da gop vao
     absorb_t: float = None              # lan cuoi con gom them cum khac
     v_t0: float = None                  # chi tinh toc do tu sau moc nay (tam nhay khi vua gop)
+    t0: float = None                    # thoi diem thay lan dau
+    gaps: list = field(default_factory=list)   # vai gia tri gap gan nhat
+    lost_since: float = None            # thoi diem lan cuoi thay, khi dang giu vi bien mat giua vung
+    lost_s: float = 0.0                 # da mat tin hieu bao lau
+    moving: bool = False                # dang di chuyen (nguong bat move_v, nguong tat move_v / 2)
+    entry: dict = None                  # luot vao vung dang mo
 
 
 class Tracker:
@@ -213,21 +235,75 @@ class Tracker:
     Gop doi tuong: 2 doi tuong gan nhau (< merge_d) va cung van toc (lech < merge_dv) lien tuc merge_s giay
     thi tinh la mot, giu so thu tu cu hon. Sau khi gop, cum nam gan (< 1,5 * merge_d) duoc gom vao doi tuong
     do; cum di xa hon thi tach thanh doi tuong moi. merge_d = 0 la tat.
+
+    Giu doi tuong: LiDAR chi quet mot mat phang nen vat thap xuong (cui, nga) la khong thay nua. Doi tuong da
+    ton tai du lau ma bien mat giua vung cam (khong sat mep, khong dang di ra, nam truoc nen ro rang) duoc giu
+    toi da hold_s giay. Xuat hien lai trong ban kinh reacq_r thi noi lai, giu so thu tu va thoi gian dung.
+    Day chi la suy luan "co the van con do", LiDAR khong thay duoc vat. hold_s = 0 la tat.
     """
 
     def __init__(self, gate=0.4, vmax=3.0, merge=0.35, miss_s=1.5, confirm=3, win_s=2.0, still_r=0.15, still_v=0.1, hist_s=30.0,
-                 merge_d=0.6, merge_dv=0.25, merge_s=1.5, absorb_s=3.0):
+                 merge_d=0.6, merge_dv=0.25, merge_s=1.5, absorb_s=3.0,
+                 hold_s=60.0, reacq_r=0.6, min_life=3.0, edge_m=0.5, min_gap=0.5, move_v=0.2):
         self.gate, self.vmax, self.merge = gate, vmax, merge    # m, m/s, m
         self.merge_d, self.merge_dv, self.merge_s, self.absorb_s = merge_d, merge_dv, merge_s, absorb_s
+        self.hold_s, self.reacq_r, self.min_life, self.edge_m, self.min_gap = hold_s, reacq_r, min_life, edge_m, min_gap
+        self.events = []                                        # (kieu, id, t, x, y, mo ta), giao dien lay roi xoa
+        self.move_v = move_v                                    # m/s
+        self.entries, self.closed = [], []                      # moi luot vao vung; cac luot vua dong, giao dien lay roi xoa
         self.miss_s, self.confirm = miss_s, confirm             # bo sau bay nhieu s khong thay; xac nhan sau bay nhieu lan
         self.win_s, self.still_r, self.still_v, self.hist_s = win_s, still_r, still_v, hist_s
         self.reset()
 
-    def reset(self):
-        self.tracks, self.next_id, self._pairs = [], 1, {}
+    def reset(self, keep_entries=False):
+        if keep_entries:
+            self.close_open()
+        else:
+            self.entries, self.closed = [], []
+        self.tracks, self.next_id, self._pairs = [], getattr(self, "next_id", 1) if keep_entries else 1, {}
+
+    def _close_entry(self, tr, note=""):
+        if tr.entry is not None:
+            tr.entry.update(t_out=tr.t[-1], note=note)
+            self.closed.append(tr.entry)
+            tr.entry = None
+
+    def close_open(self, note="dừng đo"):
+        """Dong moi luot dang mo (dung do, doi Xoay)."""
+        for tr in getattr(self, "tracks", []):
+            self._close_entry(tr, note)
 
     def confirmed(self):
         return [tr for tr in self.tracks if tr.hits >= self.confirm]
+
+    def visible(self):
+        return [tr for tr in self.confirmed() if tr.lost_since is None]
+
+    def lost_in_zone(self):
+        return [tr for tr in self.confirmed() if tr.lost_since is not None and tr.in_zone]
+
+    def _can_hold(self, tr, zone):
+        """Bien mat luc nay co dang ngo khong: da xac nhan, du lau, trong vung, xa mep, khong dang di ra, khong sat nen."""
+        if self.hold_s <= 0 or tr.hits < self.confirm or not tr.in_zone or len(zone) < 3 or tr.t0 is None:
+            return False
+        if tr.t[-1] - tr.t0 < self.min_life or (tr.gaps and float(np.median(tr.gaps)) < self.min_gap):
+            return False
+        x, y = tr.x[-1], tr.y[-1]
+        if poly_edge_dist(x, y, zone) < self.edge_m:
+            return False
+        return bool(point_in_polygon(np.array([x + tr.vx]), np.array([y + tr.vy]), zone)[0])   # sau 1 s van trong vung
+
+    def hold_active(self, zone):
+        """Con doi tuong dang duoc giu, hoac neu bien mat ngay thi se duoc giu. Detector khong duoc het bao dong."""
+        return any(tr.lost_since is not None and tr.in_zone or self._can_hold(tr, zone) for tr in self.confirmed())
+
+    def clear_lost(self):
+        """Nguoi van hanh xac nhan vung trong: bo cac doi tuong dang giu."""
+        for tr in self.lost_in_zone():
+            self.events.append(("HET_GIU", tr.id, tr.t[-1], tr.x[-1], tr.y[-1], "#%d: người vận hành xác nhận vùng trống" % tr.id))
+            self._close_entry(tr, "xác nhận trống")
+        keep = set(id(tr) for tr in self.lost_in_zone())
+        self.tracks = [tr for tr in self.tracks if id(tr) not in keep]
 
     def _measure(self, sc, objs):
         """Gop cum sat nhau (mot vat bi tach, vi du tay va than) thanh mot phep do (t, x, y, size, xs, ys)."""
@@ -241,12 +317,12 @@ class Tracker:
         for g in groups:
             xs, ys = np.concatenate([o.xs for o in g]), np.concatenate([o.ys for o in g])
             a0 = min(o.a0 for o in g)
-            out.append(self._meas(sc.t + a0 / 360.0 * sc.period, xs, ys))
+            out.append(self._meas(sc.t + a0 / 360.0 * sc.period, xs, ys, max(o.gap for o in g)))
         return out
 
     @staticmethod
-    def _meas(t, xs, ys):
-        return t, float(xs.mean()), float(ys.mean()), float(math.hypot(np.ptp(xs), np.ptp(ys))), xs, ys
+    def _meas(t, xs, ys, gap):
+        return t, float(xs.mean()), float(ys.mean()), float(math.hypot(np.ptp(xs), np.ptp(ys))), xs, ys, gap
 
     def _pred_dist(self, tr, m):
         dt = max(m[0] - tr.t[-1], 0.0)
@@ -270,6 +346,12 @@ class Tracker:
             for name in ("still_since", "zone_since"):
                 vals = [v for v in (getattr(a, name), getattr(b, name)) if v is not None]
                 setattr(a, name, min(vals) if vals else None)
+            if b.entry is not None:                             # da gop thi tinh la mot doi tuong, bo luot cua doi tuong bi gop
+                if a.entry is None:
+                    a.entry, a.entry["id"] = b.entry, a.id
+                else:
+                    self.entries.remove(b.entry)
+                b.entry = None
             self.tracks.remove(b); del by_id[ib]
         self._pairs = {k: v for k, v in self._pairs.items() if k[0] in by_id and k[1] in by_id}
 
@@ -297,6 +379,11 @@ class Tracker:
         pairs = []
         for i, tr in enumerate(self.tracks):
             for j, m in enumerate(meas):
+                if tr.lost_since is not None:                   # dang giu: chi noi lai quanh vi tri cuoi
+                    d = math.hypot(m[1] - tr.x[-1], m[2] - tr.y[-1])
+                    if d <= self.reacq_r:
+                        pairs.append((d, i, j))
+                    continue
                 d, dt = self._pred_dist(tr, m)
                 # doi tuong da co huong: du doan tot hon nen cua so hep hon
                 if d <= self.gate + self.vmax * dt * (1.0 if tr.hits < self.confirm else 0.5):
@@ -310,27 +397,58 @@ class Tracker:
         for i, tr in enumerate(self.tracks):                    # doi tuong da gop gom them cac cum con gan
             if tr.merged and now - tr.absorb_t > self.absorb_s:
                 tr.merged = 0                                   # lau khong con cum thu hai: da la mot vat
-            if not tr.merged:
+            if not tr.merged or tr.lost_since is not None:
                 continue
             for j, m in enumerate(meas):
                 if j not in used_m and self._pred_dist(tr, m)[0] < 1.5 * self.merge_d:
                     got.setdefault(i, []).append(j); used_m.add(j); tr.absorb_t = now
         for i, js in got.items():
             tr = self.tracks[i]
+            gap = max(meas[j][6] for j in js)
             t, x, y, size = self._meas(min(meas[j][0] for j in js), np.concatenate([meas[j][4] for j in js]),
-                                       np.concatenate([meas[j][5] for j in js]))[:4]
+                                       np.concatenate([meas[j][5] for j in js]), gap)[:4]
+            if tr.lost_since is not None:
+                self.events.append(("NOI_LAI", tr.id, t, x, y, "#%d xuất hiện lại sau %.0f s" % (tr.id, t - tr.lost_since)))
+                tr.lost_since, tr.lost_s, tr.v_t0 = None, 0.0, tr.t[-1]   # khong tinh toc do qua khoang mat tin hieu
             tr.t.append(t); tr.x.append(x); tr.y.append(y); tr.size = size; tr.hits += 1
+            tr.gaps = (tr.gaps + [gap])[-5:]
             self._refresh(tr)
+            if tr.still_since is not None or (tr.speed is not None and tr.speed < self.move_v / 2):
+                tr.moving = False                               # nguong tat thap hon nguong bat de khong bao lien tuc
+            elif not tr.moving and tr.hits >= self.confirm and tr.speed is not None and tr.speed >= self.move_v:
+                tr.moving = True
         for j, m in enumerate(meas):
             if j not in used_m:
-                self.tracks.append(Track(self.next_id, [m[0]], [m[1]], [m[2]], m[3], False))
+                self.tracks.append(Track(self.next_id, [m[0]], [m[1]], [m[2]], m[3], False, t0=m[0], gaps=[m[6]]))
                 self.next_id += 1
-        self.tracks = [tr for tr in self.tracks if now - tr.t[-1] <= self.miss_s]
+        keep = []
+        for tr in self.tracks:
+            if now - tr.t[-1] <= self.miss_s:
+                keep.append(tr)
+            elif tr.lost_since is not None:
+                tr.lost_s = now - tr.lost_since
+                if tr.lost_s <= self.hold_s:
+                    keep.append(tr)
+                else:
+                    self.events.append(("HET_GIU", tr.id, now, tr.x[-1], tr.y[-1], "#%d: hết thời gian giữ, không thấy lại" % tr.id))
+                    self._close_entry(tr, "hết giờ giữ")
+            elif self._can_hold(tr, zone):
+                tr.lost_since, tr.lost_s, tr.vx, tr.vy, tr.moving = tr.t[-1], now - tr.t[-1], 0.0, 0.0, False
+                self.events.append(("MAT_TIN_HIEU", tr.id, tr.t[-1], tr.x[-1], tr.y[-1], "#%d biến mất giữa vùng tại (%.2f, %.2f)" % (tr.id, tr.x[-1], tr.y[-1])))
+                keep.append(tr)
+            else:
+                self._close_entry(tr)
+        self.tracks = keep
         if self.merge_d > 0:
             self._merge_tracks(sc, now)
         for tr in self.tracks:
             tr.in_zone = len(zone) >= 3 and bool(point_in_polygon(np.array([tr.x[-1]]), np.array([tr.y[-1]]), zone)[0])
             tr.zone_since = (tr.zone_since if tr.zone_since is not None else tr.t[-1]) if tr.in_zone else None
+            if tr.in_zone and tr.entry is None and tr.hits >= self.confirm:
+                tr.entry = dict(id=tr.id, t_in=tr.zone_since, t_out=None, note="")
+                self.entries.append(tr.entry)
+            elif not tr.in_zone:
+                self._close_entry(tr)
         return self.confirmed()
 
 
@@ -355,6 +473,21 @@ class TrackLog:
             new = not os.path.exists(self.path)
             with open(self.path, "a", encoding="utf-8") as f:
                 f.write((self.HEAD if new else "") + "".join(rows))
+
+
+class EntryLog:
+    """Ghi tung luot vao vung khi luot do ket thuc. t_in, t_out cung dong ho voi t_pc."""
+    HEAD = "id,t_in,t_out,trong_vung_s,ghi_chu\n"
+
+    def __init__(self, path):
+        self.path = path
+
+    def write(self, entries):
+        if entries:
+            new = not os.path.exists(self.path)
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write((self.HEAD if new else "") + "".join(
+                    "%d,%.6f,%.6f,%.2f,%s\n" % (e["id"], e["t_in"], e["t_out"], e["t_out"] - e["t_in"], e["note"]) for e in entries))
 
 
 class AlarmLog:
@@ -392,6 +525,10 @@ class AlarmLog:
             self._write("HET,%d,,,,%.6f,,%.6f,%.6f,%.6f,,,,%.3f,,,,\n" % (
                 sc.seq, sc.period, sc.t + sc.period, t_ready, t_alarm, time.time()))
         self.was_alarm = det.alarm
+
+    def note(self, kind, seq, period, t, x, y):
+        """Su kien cua Tracker (MAT_TIN_HIEU, NOI_LAI, HET_GIU): t nam o cot t_alarm, vi tri o cx, cy."""
+        self._write("%s,%d,,,,%.6f,,,,%.6f,,,,%.3f,%.3f,%.3f,,\n" % (kind, seq, period, t, time.time(), x, y))
 
     def mark_snap(self, t):
         if self.row:

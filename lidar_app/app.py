@@ -14,7 +14,7 @@ Cai dat:  pip install PySide6 pyqtgraph pyserial numpy
 Chay:     python app.py
 CODE THU NGHIEM: da chay voi log gia lap va chay Live voi UNO + TF03 that (04/11); chua dung lam so lieu danh gia.
 """
-import json, os, sys, time
+import json, os, subprocess, sys, threading, time
 
 import numpy as np
 import pyqtgraph as pg
@@ -26,9 +26,19 @@ import detect
 HERE = os.path.dirname(os.path.abspath(__file__))
 SETTINGS = os.path.join(HERE, "settings.json")
 BG_FILE = os.path.join(HERE, "nen.npz")
+BEEP_ZONE, BEEP_MOVE, BEEP_OFF = "Có vật trong vùng", "Có vật đang đi", "Tắt"
 DEFAULTS = dict(tf_port="COM12", uno_port="COM10", tf_baud=115200, tf_hz=1000, rps=1.0, r0=0.0, offset=0.0, dir=1, maxcm=3000, minstr=0,
                 accum=1, color="cường độ", view=5.0, zone=[], margin=0.15, min_size=0.10, on_revs=3,
-                learn_revs=20, replay_dir="", replay_speed=1.0, lock_cal=False, merge_d=0.6, merge_dv=0.25)
+                learn_revs=20, replay_dir="", replay_speed=1.0, lock_cal=False, merge_d=0.6, merge_dv=0.25, hold_s=60.0, beep_mode="Có vật trong vùng")
+
+
+def code_version():
+    """Phien ban code de ghi vao session.json; khong co git thi tra ve chuoi rong."""
+    try:
+        return subprocess.run(["git", "-C", HERE, "describe", "--always", "--dirty"], capture_output=True, text=True, timeout=2,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.strip()
+    except Exception:
+        return ""
 
 
 def list_ports():
@@ -75,13 +85,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.n_ev_shown = 0
         self.rate_hist = []                 # (t, n_frames) tinh toc do khung
         self.alog = None                    # log moc thoi gian bao dong
-        self.tracker, self.tlog = detect.Tracker(), None
+        self.tracker, self.tlog, self.elog = detect.Tracker(), None, None
+        self.session = None                 # thong so cua phien do dang chay
         self._save_timer = QtCore.QTimer(self, singleShot=True, interval=500, timeout=self._save_settings)
         self._build_ui()
         self._apply_detect_params()
         self._draw_zone()
         self.timer = QtCore.QTimer(self, interval=50, timeout=self.on_tick)
         self.timer.start()
+        self.beep_timer = QtCore.QTimer(self, interval=500, timeout=self._beep_tick)   # bip lien tuc khi con dieu kien
+        self.beep_timer.start()
 
     # ------------------------------------------------------------ giao dien
     def _build_ui(self):
@@ -222,16 +235,37 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sp_on = ispin(1, 50, 1, self.cfg["on_revs"])
         self.sp_mg_d = dspin(0, 3, 0.05, self.cfg["merge_d"])
         self.sp_mg_dv = dspin(0, 3, 0.05, self.cfg["merge_dv"])
+        self.sp_hold = dspin(0, 3600, 10, self.cfg["hold_s"], 0)
         for w_, lab in ((self.sp_margin, "Gần hơn nền (m)"), (self.sp_size, "Vật nhỏ nhất (m)"), (self.sp_on, "Báo khi liên tiếp (vòng)"),
-                        (self.sp_mg_d, "Gộp khi cách dưới (m), 0 = tắt"), (self.sp_mg_dv, "Gộp khi lệch tốc độ dưới (m/s)")):
+                        (self.sp_mg_d, "Gộp khi cách dưới (m), 0 = tắt"), (self.sp_mg_dv, "Gộp khi lệch tốc độ dưới (m/s)"),
+                        (self.sp_hold, "Giữ vật biến mất (s), 0 = tắt")):
             f.addRow(lab, w_); w_.valueChanged.connect(self._apply_detect_params)
         self.lb_alarm = QtWidgets.QLabel("CHƯA CÓ VÙNG CẤM"); self.lb_alarm.setAlignment(QtCore.Qt.AlignCenter)
         self.lb_alarm.setMinimumHeight(44); self._set_alarm_style(None)
         f.addRow(self.lb_alarm)
+        bt_ack = QtWidgets.QPushButton("Xác nhận vùng trống"); bt_ack.clicked.connect(self.ack_clear)
+        f.addRow(bt_ack)
+        self.cb_beep = QtWidgets.QComboBox(); self.cb_beep.addItems([BEEP_ZONE, BEEP_MOVE, BEEP_OFF])
+        self.cb_beep.setCurrentText(self.cfg["beep_mode"])
+        f.addRow("Bíp liên tục", self.cb_beep)
         self.lst = QtWidgets.QListWidget(); self.lst.setMaximumHeight(140)
         f.addRow(self.lst)
         self.lb_tracks = QtWidgets.QLabel("Đối tượng: chưa có"); self.lb_tracks.setWordWrap(True)
         f.addRow(self.lb_tracks)
+        lay.addWidget(g)
+
+        # --- luot vao vung
+        g = QtWidgets.QGroupBox("5. Lượt vào vùng cấm"); f = QtWidgets.QFormLayout(g)
+        self.lb_entry = QtWidgets.QLabel("Tổng lượt vào: 0"); self.lb_entry.setStyleSheet("font-weight:bold")
+        self.lb_entry.setWordWrap(True)
+        f.addRow(self.lb_entry)
+        self.tb_entry = QtWidgets.QTableWidget(0, 4); self.tb_entry.setHorizontalHeaderLabels(["Đối tượng", "Vào", "Ra", "Trong vùng"])
+        self.tb_entry.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch); self.tb_entry.verticalHeader().hide()
+        self.tb_entry.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.tb_entry.setMinimumHeight(150); self.tb_entry.setMaximumHeight(220)
+        f.addRow(self.tb_entry)
+        bt_clr_e = QtWidgets.QPushButton("Xóa bảng"); bt_clr_e.clicked.connect(self.clear_entries)
+        f.addRow(bt_clr_e)
         lay.addWidget(g)
         lay.addStretch(1)
 
@@ -277,7 +311,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.draft = detect.transform_zone(self.draft, *self._cal, *new)
             self.draft_item.setData([p[0] for p in self.draft], [p[1] for p in self.draft])
         self._cal = new
-        self.tracker.reset()                            # toa do cu khong con noi tiep voi toa do moi
+        self.tracker.reset(keep_entries=True)           # toa do cu khong con noi tiep voi toa do moi
+        self._drain_entries()
         self._draw_zone()
 
     def _fill_ports(self):
@@ -295,6 +330,8 @@ class MainWindow(QtWidgets.QMainWindow):
     # ------------------------------------------------------------ chay / dung
     def toggle_run(self):
         if self.src:
+            self.tracker.close_open(); self._drain_entries(); self._update_entries()
+            self._end_session()
             self.src.stop(); self.src = None
             self.lb_ov.hide()
             self.bt_start.setText("Bắt đầu"); return
@@ -310,8 +347,13 @@ class MainWindow(QtWidgets.QMainWindow):
             name = "alarm_replay.csv" if isinstance(self.src, core.ReplaySource) else "alarm.csv"   # phat lai khong tron voi so do that
             self.alog = detect.AlarmLog(os.path.join(self.src.logdir, name))
             self.tlog = detect.TrackLog(os.path.join(self.src.logdir, name.replace("alarm", "tracks")))
+            self.elog = detect.EntryLog(os.path.join(self.src.logdir, name.replace("alarm", "luot_vao")))
             self.tracker.reset()
             self.t_start = self.src.now()
+            self._read_ui()
+            replay = isinstance(self.src, core.ReplaySource)            # phat lai khong ghi de thong so cua lan do that
+            self.session = core.SessionLog(os.path.join(self.src.logdir, "session_replay.json" if replay else "session.json"),
+                                           self.cfg, "Phát lại" if replay else "Trực tiếp", code_version())
             self.lb_ov.show()
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Lỗi", str(e)); self.src = None; return
@@ -377,11 +419,16 @@ class MainWindow(QtWidgets.QMainWindow):
         for sc in scans:
             xy = core.to_xy(sc, **self._xy_params())
             was_learning = self.det.bg.learning_left > 0
+            self.det.hold = self.tracker.hold_active(self.det.zone)
             objs, fg, newly = self.det.step(xy)
-            if was_learning and self.det.bg.ready() and isinstance(self.src, core.LiveSource):
-                self._save_bg(sc)                       # phat lai khong ghi de nen cua phan cung
+            if was_learning and self.det.bg.ready():
+                self.session.note("hoc_nen", self.src.now() - self.t_start, so_vong=self.sp_learn.value(), vong_s=round(1.0 / sc.period, 3))
+                if isinstance(self.src, core.LiveSource):
+                    self._save_bg(sc)                   # phat lai khong ghi de nen cua phan cung
             self.alog.on_scan(sc, objs, newly, self.det, t_ready, self.src.now())
             self.tlog.write(sc, self.tracker.update(sc, self.det.all_objs, self.det.zone))
+            self._drain_tracker_events(sc)
+            self._drain_entries()
             xy["fg"], xy["objs"] = fg, objs
             self.last_scan = sc
             self.recent.append((sc, xy))
@@ -392,6 +439,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.alog.mark_snap(self.src.now())
         if scans:
             self._draw()
+            self._update_entries()
         self._update_status()
         self._update_events()
         if self.alog.row:
@@ -436,17 +484,19 @@ class MainWindow(QtWidgets.QMainWindow):
             self.plot.addItem(t); self.obj_items.append(t)
         lines = []
         for tr in self.tracker.confirmed():
-            col = (220, 30, 30) if tr.in_zone else (30, 90, 200)
+            col = (230, 120, 0) if tr.lost_since is not None else (220, 30, 30) if tr.in_zone else (30, 90, 200)
             path = pg.PlotDataItem(tr.x, tr.y, pen=pg.mkPen(col, width=2))
             self.plot.addItem(path); self.obj_items.append(path)
             lab = pg.TextItem(self._track_text(tr), color=col, anchor=(0, 0)); lab.setPos(tr.x[-1], tr.y[-1])
             self.plot.addItem(lab); self.obj_items.append(lab)
             lines.append("%s, rộng %.2f m%s" % (self._track_text(tr), tr.size, ", trong vùng %.0f s" % (tr.t[-1] - tr.zone_since) if tr.in_zone else ""))
-        self.lb_tracks.setText("Đối tượng: %d" % len(lines) + ("\n" + "\n".join(lines) if lines else ""))
+        self.lb_tracks.setText("Đối tượng: %d" % len(self.tracker.visible()) + ("\n" + "\n".join(lines) if lines else ""))
 
     @staticmethod
     def _track_text(tr):
         gop = " (gộp %d)" % (tr.merged + 1) if tr.merged else ""
+        if tr.lost_since is not None:
+            return "#%d%s mất tín hiệu %.0f s" % (tr.id, gop, tr.lost_s)
         if tr.still_since is not None:
             return "#%d%s đứng yên %.0f s" % (tr.id, gop, tr.t[-1] - tr.still_since)
         return "#%d%s %s" % (tr.id, gop, "%.2f m/s" % tr.speed if tr.speed is not None else "đang đo")
@@ -468,8 +518,11 @@ class MainWindow(QtWidgets.QMainWindow):
         elif not self.det.use_bg:
             count = "Đối tượng: cần bật dùng nền"
         else:
-            conf = self.tracker.confirmed()
+            conf = self.tracker.visible()
             count = "Đối tượng: %d (trong vùng: %d)" % (len(conf), sum(tr.in_zone for tr in conf))
+            lost = len(self.tracker.lost_in_zone())
+            if lost:
+                count += "\nĐang giữ %d vật biến mất trong vùng" % lost
         return self._time_text() + "\n" + count
 
     def _update_status(self):
@@ -508,6 +561,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.lb_alarm.setText("CHƯA CÓ VÙNG CẤM"); self._set_alarm_style(None)
         elif self.det.use_bg and not self.det.bg.ready():
             self.lb_alarm.setText("CHƯA HỌC NỀN"); self._set_alarm_style(None)
+        elif self.tracker.lost_in_zone():                # khong bao gio bao "trong" khi con vat co the dang khuat
+            self.lb_alarm.setText("BÁO ĐỘNG: VẬT BIẾN MẤT TRONG VÙNG"); self._set_alarm_style(True)
         elif self.det.alarm:
             self.lb_alarm.setText("BÁO ĐỘNG: CÓ VẬT CẢN"); self._set_alarm_style(True)
         else:
@@ -517,10 +572,72 @@ class MainWindow(QtWidgets.QMainWindow):
         bg = {None: "#9e9e9e", True: "#c62828", False: "#2e7d32"}[alarm]
         self.lb_alarm.setStyleSheet("background:%s;color:white;font-size:16px;font-weight:bold;border-radius:6px" % bg)
 
+    def _beep_tick(self):
+        s, mode = self.src, self.cb_beep.currentText()
+        if not s or mode == BEEP_OFF or (isinstance(s, core.ReplaySource) and (s.paused or s.finished)):
+            return
+        if mode == BEEP_ZONE:
+            on = any(tr.in_zone for tr in self.tracker.confirmed())      # ca vat dang giu vi bien mat
+        else:
+            on = any(tr.moving for tr in self.tracker.visible())
+        if on:
+            self._beep_move()
+
+    def _drain_entries(self):
+        if self.elog:
+            self.elog.write(self.tracker.closed)
+        self.tracker.closed = []
+
+    def clear_entries(self):
+        self.tracker.entries = []
+        for tr in self.tracker.tracks:
+            tr.entry = None                             # doi tuong con trong vung se duoc tinh thanh luot moi
+        self._update_entries()
+
+    def _update_entries(self):
+        es = self.tracker.entries
+        inside = sum(e["t_out"] is None for e in es)
+        self.lb_entry.setText("Tổng lượt vào: %d | Số đối tượng: %d | Đang trong vùng: %d" % (len(es), len({e["id"] for e in es}), inside))
+        rel = lambda t: self._fmt_time(max(t - self.t_start, 0)) if self.src else "-"
+        self.tb_entry.setRowCount(min(len(es), 50))
+        for row, e in enumerate(reversed(es[-50:])):    # luot moi nhat o tren
+            end = e["t_out"] if e["t_out"] is not None else self.tracker_now(e)
+            cells = ("#%d" % e["id"], rel(e["t_in"]), rel(e["t_out"]) if e["t_out"] is not None else "đang ở trong",
+                     "%.0f s%s" % (end - e["t_in"], ", " + e["note"] if e["note"] else ""))
+            for col, txt in enumerate(cells):
+                self.tb_entry.setItem(row, col, QtWidgets.QTableWidgetItem(txt))
+
+    def tracker_now(self, e):
+        for tr in self.tracker.tracks:
+            if tr.entry is e:
+                return tr.t[-1]
+        return e["t_in"]
+
+    @staticmethod
+    def _beep_move():
+        """Tieng ngan, khac tieng bao dong. Chay luong rieng vi winsound.Beep lam dung chuong trinh trong luc keu."""
+        try:
+            import winsound
+            threading.Thread(target=winsound.Beep, args=(1500, 120), daemon=True).start()
+        except ImportError:
+            QtWidgets.QApplication.beep()
+
+    def _drain_tracker_events(self, sc=None):
+        name = {"MAT_TIN_HIEU": "MẤT TÍN HIỆU", "NOI_LAI": "NỐI LẠI", "HET_GIU": "HẾT GIỮ"}
+        for kind, _, t, x, y, msg in self.tracker.events:
+            self.det.events.append((time.time(), name[kind], msg))
+            if self.alog:
+                self.alog.note(kind, sc.seq if sc else -1, sc.period if sc else 0.0, t, x, y)
+        self.tracker.events = []
+
+    def ack_clear(self):
+        self.tracker.clear_lost()
+        self._drain_tracker_events()
+
     def _update_events(self):
         for t, kind, msg in self.det.events[self.n_ev_shown:]:
             it = QtWidgets.QListWidgetItem("%s  %s  %s" % (time.strftime("%H:%M:%S", time.localtime(t)), kind, msg))
-            if kind == "BÁO ĐỘNG":
+            if kind in ("BÁO ĐỘNG", "MẤT TÍN HIỆU"):
                 it.setForeground(QtGui.QColor("#c62828"))
             self.lst.insertItem(0, it)
         self.n_ev_shown = len(self.det.events)
@@ -585,11 +702,15 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.det.events.append((time.time(), "INFO", "Đã nạp nền học lúc %s, chỉ đúng nếu LiDAR chưa bị dời"
                                 % time.strftime("%H:%M %d/%m", time.localtime(data["t"]))))
+        if self.session:
+            self.session.note("nap_nen", self.src.now() - self.t_start, hoc_luc=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(data["t"])),
+                              vong_s=round(data["rps"], 3))
 
     def _apply_detect_params(self, *_):
         self.det.margin = self.sp_margin.value(); self.det.min_size = self.sp_size.value()
         self.det.on_revs = self.sp_on.value(); self.det.use_bg = self.ck_bg.isChecked()
         self.tracker.merge_d, self.tracker.merge_dv = self.sp_mg_d.value(), self.sp_mg_dv.value()
+        self.tracker.hold_s = self.sp_hold.value()
 
     # ------------------------------------------------------------ luu
     def _outdir(self, sub):
@@ -616,7 +737,14 @@ class MainWindow(QtWidgets.QMainWindow):
                    header="angle_deg,r_m,strength,x_m,y_m", comments="", fmt="%.4f")
         self.det.events.append((time.time(), "INFO", "Đã lưu " + fn))
 
-    def _save_settings(self):
+    def _end_session(self):
+        if self.session:
+            self._save_timer.stop()
+            self._save_settings()                       # ghi not thay doi trong nua giay cuoi
+            self.session.end()
+            self.session = None
+
+    def _read_ui(self):
         self.cfg.update(tf_port=self.cb_tf.currentText(), uno_port=self.cb_uno.currentText(), rps=self.sp_rps.value(),
                         tf_baud=int(self.cb_baud.currentText()), tf_hz=int(self.cb_hz.currentText()),
                         r0=self.sp_r0.value(), offset=self.sp_off.value(), dir=-1 if self.ck_dir.isChecked() else 1,
@@ -624,7 +752,17 @@ class MainWindow(QtWidgets.QMainWindow):
                         color=self.cb_color.currentText(), zone=self.det.zone, margin=self.sp_margin.value(),
                         min_size=self.sp_size.value(), on_revs=self.sp_on.value(), learn_revs=self.sp_learn.value(),
                         replay_dir=self.le_dir.text(), replay_speed=float(self.cb_speed.currentText()),
-                        lock_cal=self.ck_lock.isChecked(), merge_d=self.sp_mg_d.value(), merge_dv=self.sp_mg_dv.value())
+                        lock_cal=self.ck_lock.isChecked(), merge_d=self.sp_mg_d.value(), merge_dv=self.sp_mg_dv.value(),
+                        hold_s=self.sp_hold.value(), beep_mode=self.cb_beep.currentText())
+
+    def _save_settings(self):
+        old = dict(self.cfg)
+        self._read_ui()
+        try:
+            if self.session and self.src:               # t tre toi da khoang 0,5 s so voi luc doi
+                self.session.diff(old, self.cfg, self.src.now() - self.t_start)
+        except Exception as e:
+            self.det.events.append((time.time(), "INFO", "Không ghi được session.json: %s" % e))
         try:
             tmp = SETTINGS + ".tmp"
             with open(tmp, "w") as f:
@@ -636,6 +774,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def closeEvent(self, e):
         self._save_timer.stop()
         if self.src:
+            self.tracker.close_open(); self._drain_entries()
+            self._end_session()
             self.src.stop()
         self._save_settings()
         super().closeEvent(e)
