@@ -34,6 +34,17 @@ def point_in_polygon(x, y, poly):
     return inside
 
 
+def transform_zone(zone, off_old, dir_old, off_new, dir_new):
+    """Doi dinh vung cam khi doi Xoay / Dao chieu de vung van o dung vi tri that so voi LiDAR.
+    Xoay va lat giu nguyen duong thang nen chi can doi cac dinh. r0 khong lam vung thay doi."""
+    out = []
+    for x, y in zone:
+        r, th = math.hypot(x, y), math.degrees(math.atan2(y, x))
+        th = dir_new * dir_old * (th - off_old) + off_new     # th = dir * goc tho + off
+        out.append((r * math.cos(math.radians(th)), r * math.sin(math.radians(th))))
+    return out
+
+
 @dataclass
 class Obj:
     cx: float
@@ -79,6 +90,23 @@ class Background:
 
     def ready(self):
         return self.bg is not None
+
+    def save(self, path, rps, r0):
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            np.savez(f, bg=self.bg, bin_deg=self.bin_deg, rps=rps, r0=r0, t=time.time())
+        os.replace(tmp, path)                           # app chet giua chung khong lam hong file cu
+
+    @staticmethod
+    def read(path):
+        with np.load(path) as d:
+            return dict(bg=d["bg"], bin_deg=float(d["bin_deg"]), rps=float(d["rps"]), r0=float(d["r0"]), t=float(d["t"]))
+
+    def apply(self, data, r0_now):
+        """Dung nen da doc. Nen luu khoang cach da tru r0 nen phai bu neu r0 da doi."""
+        if data["bin_deg"] != self.bin_deg or len(data["bg"]) != self.nb:
+            raise ValueError("File nền không đúng độ phân giải góc.")
+        self.bg, self.samples, self.learning_left = data["bg"] + data["r0"] - r0_now, [], 0
 
     def foreground(self, ang_deg, r, margin):
         if self.bg is None:

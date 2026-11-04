@@ -13,7 +13,8 @@ python app.py
 | `core.py` | Tách khung TF03, khớp đồng hồ, ghép góc theo mốc 0°, nguồn Trực tiếp / Phát lại |
 | `detect.py` | Học nền, vùng cấm, gom cụm, chống báo động giả |
 | `gen_fake_log.py` | Tạo thư mục `log_gia_lap/` để thử app khi không có phần cứng |
-| `settings.json` | Tự tạo khi đóng app: cổng COM, r0, xoay, vùng cấm... |
+| `settings.json` | Tự lưu khoảng 0,5 s sau mỗi lần đổi và khi đóng app: cổng COM, r0, xoay, vùng cấm... |
+| `nen.npz` | Nền học gần nhất ở chế độ Trực tiếp |
 
 ## Thử không cần phần cứng
 1. `python gen_fake_log.py` → tạo `log_gia_lap/` (phòng 8 × 6 m, một người đi vào vùng giữa phòng ở giây 6–24).
@@ -34,9 +35,9 @@ Bấm **Dừng** trước, rồi dùng mục **TF03**. **Dò TF03** tìm baud hi
 App từ chối các tổ hợp sai điều kiện trên. Cấu hình được lưu vào TF03. Đã chạy thật 2000 Hz trong 370 s (đo được 1999,2 Hz); 5000 Hz chưa được kiểm chứng.
 
 ## Quy trình giám sát
-1. Chỉnh **r0**, **Xoay**, **Đảo chiều** cho bản đồ khớp phòng thật. **Làm bước này trước khi vẽ vùng cấm**, vì vùng cấm vẽ theo tọa độ x, y.
+1. Chỉnh **r0**, **Xoay**, **Đảo chiều** cho bản đồ khớp phòng thật, rồi tích **Khóa hiệu chỉnh** để tránh đổi nhầm. Lăn chuột trên ô số chỉ cuộn bảng, không đổi giá trị. Nếu đổi Xoay hay Đảo chiều sau khi đã vẽ vùng cấm, vùng tự xoay theo và vẫn ở đúng vị trí thật so với LiDAR.
 2. **Vẽ vùng cấm**: bấm nút, bấm chuột trái lên bản đồ để thêm từng đỉnh, bấm nút lần nữa để kết thúc.
-3. **Học nền** khi vùng cấm đang trống và bản đồ đã đứng yên (mặc định 20 vòng). Nền lưu theo góc thô nên không phụ thuộc r0 / Xoay. Nền không được lưu khi đóng app. Chưa học nền thì app hiện CHƯA HỌC NỀN và không báo động, trừ khi tắt dùng nền.
+3. **Học nền** khi vùng cấm đang trống và bản đồ đã đứng yên (mặc định 20 vòng). Nền lưu theo góc thô nên không phụ thuộc Xoay. Học xong ở chế độ Trực tiếp, nền tự lưu vào `nen.npz`; phát lại không ghi đè file này. Mở app lần sau, bấm **Nạp nền đã lưu** nếu LiDAR chưa bị dời. App hỏi lại khi tốc độ quay lệch quá 5 % so với lúc học, và tự bù nếu r0 đã đổi. Chưa học nền thì app hiện CHƯA HỌC NỀN và không báo động, trừ khi tắt dùng nền.
 4. Khi có vật trong vùng cấm liên tiếp *N* vòng (mặc định 3): ô trạng thái chuyển đỏ, có tiếng beep, ghi nhật ký và lưu ảnh vào `su_kien/`.
 
 ## Log mốc thời gian báo động

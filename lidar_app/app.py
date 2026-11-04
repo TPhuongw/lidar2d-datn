@@ -7,6 +7,8 @@ Chuc nang:
   Dot 2: ve vung cam bang chuot, hoc nen, gom cum vat the, bao dong (mau do + tieng beep),
          nhat ky su kien kem anh chup.
   Dot 3 (mot phan): do baud, dat baud va tan so TF03 khi dang dung.
+  Cau hinh: ty lan chuot khong doi thong so, khoa hieu chinh, vung cam di theo Xoay / Dao chieu,
+            tu luu settings khi doi, luu va nap nen.
 
 Cai dat:  pip install PySide6 pyqtgraph pyserial numpy
 Chay:     python app.py
@@ -23,9 +25,10 @@ import detect
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SETTINGS = os.path.join(HERE, "settings.json")
+BG_FILE = os.path.join(HERE, "nen.npz")
 DEFAULTS = dict(tf_port="COM12", uno_port="COM10", tf_baud=115200, tf_hz=1000, rps=1.0, r0=0.0, offset=0.0, dir=1, maxcm=3000, minstr=0,
                 accum=1, color="cường độ", view=5.0, zone=[], margin=0.15, min_size=0.10, on_revs=3,
-                learn_revs=20, replay_dir="", replay_speed=1.0)
+                learn_revs=20, replay_dir="", replay_speed=1.0, lock_cal=False)
 
 
 def list_ports():
@@ -72,6 +75,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.n_ev_shown = 0
         self.rate_hist = []                 # (t, n_frames) tinh toc do khung
         self.alog = None                    # log moc thoi gian bao dong
+        self._save_timer = QtCore.QTimer(self, singleShot=True, interval=500, timeout=self._save_settings)
         self._build_ui()
         self._apply_detect_params()
         self._draw_zone()
@@ -178,9 +182,14 @@ class MainWindow(QtWidgets.QMainWindow):
                         (self.sp_max, "Bỏ điểm xa hơn (cm)"), (self.sp_str, "Cường độ tối thiểu"),
                         (self.sp_acc, "Cộng dồn (vòng)"), (self.cb_color, "Tô màu theo")):
             f.addRow(lab, w_) if lab else f.addRow(w_)
+        self._cal = self._cal_now()
+        self.sp_off.valueChanged.connect(self._on_cal); self.ck_dir.toggled.connect(self._on_cal)   # doi vung truoc khi ve lai
         for w_ in (self.sp_r0, self.sp_off, self.sp_max, self.sp_str, self.sp_acc):
             w_.valueChanged.connect(self._redraw_recent)
         self.ck_dir.toggled.connect(self._redraw_recent); self.cb_color.currentTextChanged.connect(self._redraw_recent)
+        self.ck_lock = QtWidgets.QCheckBox("Khóa hiệu chỉnh (r0, Xoay, chiều)")
+        self.ck_lock.toggled.connect(self._apply_lock); self.ck_lock.setChecked(self.cfg["lock_cal"])
+        f.addRow(self.ck_lock)
         h = QtWidgets.QHBoxLayout()
         b1 = QtWidgets.QPushButton("Lưu ảnh"); b1.clicked.connect(self.save_png)
         b2 = QtWidgets.QPushButton("Lưu CSV vòng này"); b2.clicked.connect(self.save_csv)
@@ -201,6 +210,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ck_bg.toggled.connect(self._apply_detect_params)
         h.addWidget(bt_learn); h.addWidget(self.sp_learn); h.addWidget(QtWidgets.QLabel("vòng")); h.addWidget(self.ck_bg)
         f.addRow(h)
+        bt_loadbg = QtWidgets.QPushButton("Nạp nền đã lưu"); bt_loadbg.clicked.connect(self.load_bg)
+        f.addRow(bt_loadbg)
         self.sp_margin = dspin(0.02, 2, 0.05, self.cfg["margin"])
         self.sp_size = dspin(0.0, 5, 0.05, self.cfg["min_size"])
         self.sp_on = ispin(1, 50, 1, self.cfg["on_revs"])
@@ -214,11 +225,49 @@ class MainWindow(QtWidgets.QMainWindow):
         lay.addWidget(g)
         lay.addStretch(1)
 
-        scroll = QtWidgets.QScrollArea(); scroll.setWidget(side); scroll.setWidgetResizable(True)
+        spins = side.findChildren(QtWidgets.QSpinBox) + side.findChildren(QtWidgets.QDoubleSpinBox)
+        combos = side.findChildren(QtWidgets.QComboBox)
+        for w_ in spins + combos:                       # lan chuot chi cuon bang, khong doi thong so
+            w_.installEventFilter(self)
+            w_.setFocusPolicy(QtCore.Qt.StrongFocus)
+        for w_ in spins:                                # tu luu khi doi
+            w_.valueChanged.connect(self._mark_dirty)
+        for w_ in combos:
+            w_.currentTextChanged.connect(self._mark_dirty)
+        for w_ in side.findChildren(QtWidgets.QCheckBox):
+            w_.toggled.connect(self._mark_dirty)
+        self.le_dir.textChanged.connect(self._mark_dirty)
+
+        scroll =QtWidgets.QScrollArea(); scroll.setWidget(side); scroll.setWidgetResizable(True)
         split = QtWidgets.QSplitter(); split.addWidget(self.plot); split.addWidget(scroll)
         split.setStretchFactor(0, 1)
         self.setCentralWidget(split)
         self.resize(1300, 860)
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QtCore.QEvent.Wheel and isinstance(obj, (QtWidgets.QAbstractSpinBox, QtWidgets.QComboBox)):
+            ev.ignore()                                 # chuyen len khung cuon
+            return True
+        return super().eventFilter(obj, ev)
+
+    def _mark_dirty(self, *_):
+        self._save_timer.start()
+
+    def _apply_lock(self, on):
+        for w_ in (self.sp_r0, self.sp_off, self.ck_dir):
+            w_.setEnabled(not on)
+
+    def _cal_now(self):
+        return self.sp_off.value(), -1 if self.ck_dir.isChecked() else 1
+
+    def _on_cal(self, *_):
+        new = self._cal_now()
+        self.det.zone = detect.transform_zone(self.det.zone, *self._cal, *new)
+        if self.draft:
+            self.draft = detect.transform_zone(self.draft, *self._cal, *new)
+            self.draft_item.setData([p[0] for p in self.draft], [p[1] for p in self.draft])
+        self._cal = new
+        self._draw_zone()
 
     def _fill_ports(self):
         ports = list_ports()
@@ -311,7 +360,10 @@ class MainWindow(QtWidgets.QMainWindow):
         t_ready = self.src.now()
         for sc in scans:
             xy = core.to_xy(sc, **self._xy_params())
+            was_learning = self.det.bg.learning_left > 0
             objs, fg, newly = self.det.step(xy)
+            if was_learning and self.det.bg.ready() and isinstance(self.src, core.LiveSource):
+                self._save_bg(sc)                       # phat lai khong ghi de nen cua phan cung
             self.alog.on_scan(sc, objs, newly, self.det, t_ready, self.src.now())
             xy["fg"], xy["objs"] = fg, objs
             self.last_scan = sc
@@ -426,6 +478,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.bt_draw.setText("Vẽ vùng cấm")
             if len(self.draft) >= 3:
                 self.det.zone = list(self.draft)
+                self._mark_dirty()
             self.draft = []; self.draft_item.setData([], []); self._draw_zone()
 
     def on_click(self, ev):
@@ -437,7 +490,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.draft_item.setData(xs, ys)
 
     def clear_zone(self):
-        self.det.zone = []; self._draw_zone()
+        self.det.zone = []; self._draw_zone(); self._mark_dirty()
 
     def _draw_zone(self):
         z = self.det.zone
@@ -449,6 +502,33 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def learn_bg(self):
         self.det.bg.start_learning(self.sp_learn.value())
+
+    def _save_bg(self, sc):
+        try:
+            self.det.bg.save(BG_FILE, 1.0 / sc.period, self.sp_r0.value())
+            self.det.events.append((time.time(), "INFO", "Đã lưu nền"))
+        except Exception as e:
+            self.det.events.append((time.time(), "INFO", "Không lưu được nền: %s" % e))
+
+    def load_bg(self):
+        try:
+            data = detect.Background.read(BG_FILE)
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Nền", "Không đọc được nền đã lưu: %s" % e)
+            return
+        P = self.mapper.periods() if self.src else []
+        rps = 1.0 / float(np.median(P)) if len(P) else self.sp_rps.value()
+        if abs(rps - data["rps"]) > 0.05 * data["rps"] and QtWidgets.QMessageBox.question(
+                self, "Nền", "Nền học ở %.2f vòng/s, hiện là %.2f vòng/s. Mốc 0° dịch theo tốc độ nên nền có thể lệch góc. Vẫn nạp?"
+                % (data["rps"], rps)) != QtWidgets.QMessageBox.Yes:
+            return
+        try:
+            self.det.bg.apply(data, self.sp_r0.value())
+        except ValueError as e:
+            QtWidgets.QMessageBox.warning(self, "Nền", str(e))
+            return
+        self.det.events.append((time.time(), "INFO", "Đã nạp nền học lúc %s, chỉ đúng nếu LiDAR chưa bị dời"
+                                % time.strftime("%H:%M %d/%m", time.localtime(data["t"]))))
 
     def _apply_detect_params(self, *_):
         self.det.margin = self.sp_margin.value(); self.det.min_size = self.sp_size.value()
@@ -479,20 +559,28 @@ class MainWindow(QtWidgets.QMainWindow):
                    header="angle_deg,r_m,strength,x_m,y_m", comments="", fmt="%.4f")
         self.det.events.append((time.time(), "INFO", "Đã lưu " + fn))
 
-    def closeEvent(self, e):
-        if self.src:
-            self.src.stop()
+    def _save_settings(self):
         self.cfg.update(tf_port=self.cb_tf.currentText(), uno_port=self.cb_uno.currentText(), rps=self.sp_rps.value(),
                         tf_baud=int(self.cb_baud.currentText()), tf_hz=int(self.cb_hz.currentText()),
                         r0=self.sp_r0.value(), offset=self.sp_off.value(), dir=-1 if self.ck_dir.isChecked() else 1,
                         maxcm=self.sp_max.value(), minstr=self.sp_str.value(), accum=self.sp_acc.value(),
                         color=self.cb_color.currentText(), zone=self.det.zone, margin=self.sp_margin.value(),
                         min_size=self.sp_size.value(), on_revs=self.sp_on.value(), learn_revs=self.sp_learn.value(),
-                        replay_dir=self.le_dir.text(), replay_speed=float(self.cb_speed.currentText()))
+                        replay_dir=self.le_dir.text(), replay_speed=float(self.cb_speed.currentText()),
+                        lock_cal=self.ck_lock.isChecked())
         try:
-            json.dump(self.cfg, open(SETTINGS, "w"), indent=2)
-        except Exception:
-            pass
+            tmp = SETTINGS + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(self.cfg, f, indent=2)
+            os.replace(tmp, SETTINGS)                   # app chet giua chung khong lam hong file cu
+        except Exception as e:
+            self.det.events.append((time.time(), "INFO", "Không lưu được cấu hình: %s" % e))
+
+    def closeEvent(self, e):
+        self._save_timer.stop()
+        if self.src:
+            self.src.stop()
+        self._save_settings()
         super().closeEvent(e)
 
 
