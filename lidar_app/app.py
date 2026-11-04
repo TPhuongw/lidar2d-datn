@@ -95,7 +95,8 @@ class MainWindow(QtWidgets.QMainWindow):
         for it in (self.zone_item, self.sc, self.sc_fg, self.draft_item, origin):
             self.plot.addItem(it)
         self.plot.scene().sigMouseClicked.connect(self.on_click)
-        self.cmap = pg.colormap.get("viridis")
+        self.lut = np.array([pg.mkBrush(c) for c in pg.colormap.get("viridis").map(np.linspace(0, 1, 64), mode="qcolor")],
+                            dtype=object)        # bang mau dung san: tao brush tung diem qua cham, lam tre luong doc COM
 
         side = QtWidgets.QWidget(); lay = QtWidgets.QVBoxLayout(side)
         side.setMinimumWidth(330); side.setMaximumWidth(380)
@@ -271,8 +272,8 @@ class MainWindow(QtWidgets.QMainWindow):
         val = np.concatenate([v["s"] if self.cb_color.currentText() == "cường độ" else v["r"] for _, v in sel])
         if len(val):
             lo, hi = np.percentile(val, 2), np.percentile(val, 98)
-            cols = self.cmap.map(np.clip((val - lo) / max(hi - lo, 1e-9), 0, 1), mode="qcolor")
-            self.sc.setData(x, y, brush=[pg.mkBrush(c) for c in cols])
+            idx = (np.clip((val - lo) / max(hi - lo, 1e-9), 0, 1) * (len(self.lut) - 1)).astype(int)
+            self.sc.setData(x, y, brush=self.lut[idx])
         last = sel[-1][1]
         fg = last.get("fg", np.zeros(0, bool))
         if len(fg) == len(last["x"]) and fg.any():
