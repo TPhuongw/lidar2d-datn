@@ -262,13 +262,31 @@ class Tracker:
             self.entries, self.closed = [], []
         self.tracks, self.next_id, self._pairs = [], getattr(self, "next_id", 1) if keep_entries else 1, {}
 
+    def _open_entry(self, tr):
+        tr.entry = dict(id=tr.id, t0=tr.t0 if tr.t0 is not None else tr.t[0], t_in=tr.zone_since if tr.zone_since is not None else tr.t[0],
+                        t_out=None, t_last=None, x_in=tr.x[-1], y_in=tr.y[-1], x_last=tr.x[-1], y_last=tr.y[-1],
+                        v_in=None, v_max=0.0, v_sum=0.0, v_n=0, size=tr.size, n_lost=0, t_lost=None, note="")
+        self.entries.append(tr.entry)
+
+    def _touch_entry(self, tr):
+        """Cap nhat luot dang mo bang phep do moi nhat cua doi tuong."""
+        e = tr.entry
+        if e is None or e["t_last"] == tr.t[-1]:
+            return
+        e.update(t_last=tr.t[-1], x_last=tr.x[-1], y_last=tr.y[-1], size=max(e["size"], tr.size))
+        if tr.speed is not None:
+            if e["v_in"] is None:
+                e["v_in"] = tr.speed
+            e["v_max"] = max(e["v_max"], tr.speed); e["v_sum"] += tr.speed; e["v_n"] += 1
+
     def _close_entry(self, tr, note=""):
         if tr.entry is not None:
+            self._touch_entry(tr)
             tr.entry.update(t_out=tr.t[-1], note=note)
             self.closed.append(tr.entry)
             tr.entry = None
 
-    def close_open(self, note="dừng đo"):
+    def close_open(self, note="Dừng đo"):
         """Dong moi luot dang mo (dung do, doi Xoay)."""
         for tr in getattr(self, "tracks", []):
             self._close_entry(tr, note)
@@ -301,7 +319,7 @@ class Tracker:
         """Nguoi van hanh xac nhan vung trong: bo cac doi tuong dang giu."""
         for tr in self.lost_in_zone():
             self.events.append(("HET_GIU", tr.id, tr.t[-1], tr.x[-1], tr.y[-1], "#%d: người vận hành xác nhận vùng trống" % tr.id))
-            self._close_entry(tr, "xác nhận trống")
+            self._close_entry(tr, "Xác nhận trống")
         keep = set(id(tr) for tr in self.lost_in_zone())
         self.tracks = [tr for tr in self.tracks if id(tr) not in keep]
 
@@ -431,24 +449,29 @@ class Tracker:
                     keep.append(tr)
                 else:
                     self.events.append(("HET_GIU", tr.id, now, tr.x[-1], tr.y[-1], "#%d: hết thời gian giữ, không thấy lại" % tr.id))
-                    self._close_entry(tr, "hết giờ giữ")
+                    self._close_entry(tr, "Hết giờ giữ")
             elif self._can_hold(tr, zone):
                 tr.lost_since, tr.lost_s, tr.vx, tr.vy, tr.moving = tr.t[-1], now - tr.t[-1], 0.0, 0.0, False
                 self.events.append(("MAT_TIN_HIEU", tr.id, tr.t[-1], tr.x[-1], tr.y[-1], "#%d biến mất giữa vùng tại (%.2f, %.2f)" % (tr.id, tr.x[-1], tr.y[-1])))
+                if tr.entry is not None:
+                    tr.entry["t_lost"] = tr.t[-1]; tr.entry["n_lost"] += 1
                 keep.append(tr)
             else:
-                self._close_entry(tr)
+                if tr.entry is not None:
+                    tr.entry["t_lost"] = tr.t[-1]
+                self._close_entry(tr, "Mất tín hiệu")
         self.tracks = keep
         if self.merge_d > 0:
             self._merge_tracks(sc, now)
         for tr in self.tracks:
             tr.in_zone = len(zone) >= 3 and bool(point_in_polygon(np.array([tr.x[-1]]), np.array([tr.y[-1]]), zone)[0])
             tr.zone_since = (tr.zone_since if tr.zone_since is not None else tr.t[-1]) if tr.in_zone else None
-            if tr.in_zone and tr.entry is None and tr.hits >= self.confirm:
-                tr.entry = dict(id=tr.id, t_in=tr.zone_since, t_out=None, note="")
-                self.entries.append(tr.entry)
-            elif not tr.in_zone:
-                self._close_entry(tr)
+            inside = tr.in_zone or len(zone) < 3                # chua co vung cam: ghi lich su tren toan phong
+            if inside and tr.entry is None and tr.hits >= self.confirm:
+                self._open_entry(tr)
+            elif not inside:
+                self._close_entry(tr, "Đã ra khỏi vùng")
+            self._touch_entry(tr)
         return self.confirmed()
 
 
@@ -477,7 +500,8 @@ class TrackLog:
 
 class EntryLog:
     """Ghi tung luot vao vung khi luot do ket thuc. t_in, t_out cung dong ho voi t_pc."""
-    HEAD = "id,t_in,t_out,trong_vung_s,ghi_chu\n"
+    HEAD = ("id,t_xuat_hien,t_vao,t_ra,trong_vung_s,v_vao_m_s,v_tb_m_s,v_max_m_s,rong_m,x_vao,y_vao,x_cuoi,y_cuoi,"
+            "so_lan_mat_tin_hieu,t_mat_tin_hieu,trang_thai\n")
 
     def __init__(self, path):
         self.path = path
@@ -486,8 +510,15 @@ class EntryLog:
         if entries:
             new = not os.path.exists(self.path)
             with open(self.path, "a", encoding="utf-8") as f:
-                f.write((self.HEAD if new else "") + "".join(
-                    "%d,%.6f,%.6f,%.2f,%s\n" % (e["id"], e["t_in"], e["t_out"], e["t_out"] - e["t_in"], e["note"]) for e in entries))
+                f.write((self.HEAD if new else "") + "".join(self._row(e) for e in entries))
+
+    @staticmethod
+    def _row(e):
+        v = lambda x: "" if x is None else "%.3f" % x
+        return "%d,%.6f,%.6f,%.6f,%.2f,%s,%s,%s,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%s,%s\n" % (
+            e["id"], e["t0"], e["t_in"], e["t_out"], e["t_out"] - e["t_in"], v(e["v_in"]), v(e["v_sum"] / e["v_n"] if e["v_n"] else None),
+            v(e["v_max"] if e["v_n"] else None), e["size"], e["x_in"], e["y_in"], e["x_last"], e["y_last"], e["n_lost"],
+            "" if e["t_lost"] is None else "%.6f" % e["t_lost"], e["note"])
 
 
 class AlarmLog:

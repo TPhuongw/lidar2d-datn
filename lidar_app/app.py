@@ -14,7 +14,7 @@ Cai dat:  pip install PySide6 pyqtgraph pyserial numpy
 Chay:     python app.py
 CODE THU NGHIEM: da chay voi log gia lap va chay Live voi UNO + TF03 that (04/11); chua dung lam so lieu danh gia.
 """
-import json, os, subprocess, sys, threading, time
+import json, math, os, struct, subprocess, sys, tempfile, time, wave
 
 import numpy as np
 import pyqtgraph as pg
@@ -30,6 +30,45 @@ BEEP_ZONE, BEEP_MOVE, BEEP_OFF = "Có vật trong vùng", "Có vật đang đi",
 DEFAULTS = dict(tf_port="COM12", uno_port="COM10", tf_baud=115200, tf_hz=1000, rps=1.0, r0=0.0, offset=0.0, dir=1, maxcm=3000, minstr=0,
                 accum=1, color="cường độ", view=5.0, zone=[], margin=0.15, min_size=0.10, on_revs=3,
                 learn_revs=20, replay_dir="", replay_speed=1.0, lock_cal=False, merge_d=0.6, merge_dv=0.25, hold_s=60.0, beep_mode="Có vật trong vùng")
+
+
+class BeepPlayer:
+    """Phat lap tieng keo dai (long) hoac ngat quang (pulse) qua loa, khong lam dung giao dien. Khong co winsound thi ok = False."""
+    RATE = 22050
+
+    def __init__(self):
+        self.state, self.ok, self.files = "off", False, {}
+        try:
+            import winsound
+            self.ws = winsound
+            d = tempfile.gettempdir()
+            self.files = dict(long=os.path.join(d, "lidar_app_bip_dai.wav"), pulse=os.path.join(d, "lidar_app_bip_ngat.wav"))
+            self._wav(self.files["long"], [(1000, 1.0)])          # so chu ky nguyen, lap lai lien mach
+            self._wav(self.files["pulse"], [(1500, 0.15), (0, 0.15)])
+            self.ok = True
+        except Exception:
+            pass
+
+    def _wav(self, path, parts):
+        data = bytearray()
+        for hz, sec in parts:
+            n = int(self.RATE * sec)
+            for i in range(n):
+                edge = min(1.0, i / 100.0, (n - i) / 100.0) if len(parts) > 1 else 1.0   # tieng ngan: vuot mep tranh tieng tach
+                data += struct.pack("<h", int(14000 * edge * math.sin(2 * math.pi * hz * i / self.RATE)) if hz else 0)
+        with wave.open(path, "wb") as f:
+            f.setnchannels(1); f.setsampwidth(2); f.setframerate(self.RATE); f.writeframes(bytes(data))
+
+    def set(self, state):
+        if state == self.state:
+            return
+        self.state = state
+        if not self.ok:
+            return
+        if state == "off":
+            self.ws.PlaySound(None, self.ws.SND_PURGE)
+        else:
+            self.ws.PlaySound(self.files[state], self.ws.SND_FILENAME | self.ws.SND_ASYNC | self.ws.SND_LOOP)
 
 
 def code_version():
@@ -87,13 +126,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.alog = None                    # log moc thoi gian bao dong
         self.tracker, self.tlog, self.elog = detect.Tracker(), None, None
         self.session = None                 # thong so cua phien do dang chay
+        self.t_start, self.wall_off, self.entry_view = 0.0, None, []   # wall_off: gio he thong - dong ho nguon (Truc tiep)
         self._save_timer = QtCore.QTimer(self, singleShot=True, interval=500, timeout=self._save_settings)
         self._build_ui()
         self._apply_detect_params()
         self._draw_zone()
         self.timer = QtCore.QTimer(self, interval=50, timeout=self.on_tick)
         self.timer.start()
-        self.beep_timer = QtCore.QTimer(self, interval=500, timeout=self._beep_tick)   # bip lien tuc khi con dieu kien
+        self.player = BeepPlayer()
+        self.beep_timer = QtCore.QTimer(self, interval=200, timeout=self._beep_tick)
         self.beep_timer.start()
 
     # ------------------------------------------------------------ giao dien
@@ -112,7 +153,9 @@ class MainWindow(QtWidgets.QMainWindow):
                                           symbol="o", symbolSize=6, symbolBrush=(230, 120, 0))
         self.obj_items = []
         origin = pg.ScatterPlotItem([0], [0], symbol="+", size=18, pen=pg.mkPen("r", width=2))
-        for it in (self.zone_item, self.sc, self.sc_fg, self.draft_item, origin):
+        self.sel_mark = pg.ScatterPlotItem(symbol="x", size=18, pen=pg.mkPen((120, 0, 160), width=3), brush=pg.mkBrush(120, 0, 160))
+        self.sel_text = pg.TextItem("", color=(120, 0, 160), anchor=(0, 1))     # diem cuoi cua dong dang chon trong bang
+        for it in (self.zone_item, self.sc, self.sc_fg, self.draft_item, origin, self.sel_mark, self.sel_text):
             self.plot.addItem(it)
         self.plot.scene().sigMouseClicked.connect(self.on_click)
         self.lb_ov = QtWidgets.QLabel(self.plot)        # thoi gian va so doi tuong, nam tren ban do
@@ -253,21 +296,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lb_tracks = QtWidgets.QLabel("Đối tượng: chưa có"); self.lb_tracks.setWordWrap(True)
         f.addRow(self.lb_tracks)
         lay.addWidget(g)
-
-        # --- luot vao vung
-        g = QtWidgets.QGroupBox("5. Lượt vào vùng cấm"); f = QtWidgets.QFormLayout(g)
-        self.lb_entry = QtWidgets.QLabel("Tổng lượt vào: 0"); self.lb_entry.setStyleSheet("font-weight:bold")
-        self.lb_entry.setWordWrap(True)
-        f.addRow(self.lb_entry)
-        self.tb_entry = QtWidgets.QTableWidget(0, 4); self.tb_entry.setHorizontalHeaderLabels(["Đối tượng", "Vào", "Ra", "Trong vùng"])
-        self.tb_entry.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch); self.tb_entry.verticalHeader().hide()
-        self.tb_entry.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.tb_entry.setMinimumHeight(150); self.tb_entry.setMaximumHeight(220)
-        f.addRow(self.tb_entry)
-        bt_clr_e = QtWidgets.QPushButton("Xóa bảng"); bt_clr_e.clicked.connect(self.clear_entries)
-        f.addRow(bt_clr_e)
-        lay.addWidget(g)
         lay.addStretch(1)
+
+        # --- lich su doi tuong, ben duoi ban do
+        hist = QtWidgets.QGroupBox("Lịch sử đối tượng vào vùng"); v = QtWidgets.QVBoxLayout(hist)
+        h = QtWidgets.QHBoxLayout()
+        self.lb_entry = QtWidgets.QLabel("Tổng lượt vào: 0"); self.lb_entry.setStyleSheet("font-weight:bold")
+        bt_clr_e = QtWidgets.QPushButton("Xóa bảng"); bt_clr_e.clicked.connect(self.clear_entries)
+        h.addWidget(self.lb_entry, 1); h.addWidget(bt_clr_e)
+        v.addLayout(h)
+        heads = ["Đối tượng", "Xuất hiện", "Vào vùng", "Ra / mất", "Trong vùng (s)", "Tốc độ vào (m/s)", "Tốc độ TB (m/s)",
+                 "Tốc độ lớn nhất (m/s)", "Rộng (m)", "Điểm cuối (x, y)", "Số lần mất", "Trạng thái"]
+        self.tb_entry = QtWidgets.QTableWidget(0, len(heads)); self.tb_entry.setHorizontalHeaderLabels(heads)
+        self.tb_entry.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        self.tb_entry.horizontalHeader().setStretchLastSection(True); self.tb_entry.verticalHeader().hide()
+        self.tb_entry.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.tb_entry.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.tb_entry.cellClicked.connect(self._on_entry_click)
+        v.addWidget(self.tb_entry)
 
         spins = side.findChildren(QtWidgets.QSpinBox) + side.findChildren(QtWidgets.QDoubleSpinBox)
         combos = side.findChildren(QtWidgets.QComboBox)
@@ -283,7 +329,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.le_dir.textChanged.connect(self._mark_dirty)
 
         scroll =QtWidgets.QScrollArea(); scroll.setWidget(side); scroll.setWidgetResizable(True)
-        split = QtWidgets.QSplitter(); split.addWidget(self.plot); split.addWidget(scroll)
+        left = QtWidgets.QSplitter(QtCore.Qt.Vertical); left.addWidget(self.plot); left.addWidget(hist)
+        left.setStretchFactor(0, 3); left.setStretchFactor(1, 1); left.setSizes([640, 220])
+        split = QtWidgets.QSplitter(); split.addWidget(left); split.addWidget(scroll)
         split.setStretchFactor(0, 1)
         self.setCentralWidget(split)
         self.resize(1300, 860)
@@ -350,6 +398,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.elog = detect.EntryLog(os.path.join(self.src.logdir, name.replace("alarm", "luot_vao")))
             self.tracker.reset()
             self.t_start = self.src.now()
+            self.wall_off = None if isinstance(self.src, core.ReplaySource) else time.time() - self.src.now()
+            self.sel_mark.setData([], []); self.sel_text.setText(""); self._update_entries()
             self._read_ui()
             replay = isinstance(self.src, core.ReplaySource)            # phat lai khong ghi de thong so cua lan do that
             self.session = core.SessionLog(os.path.join(self.src.logdir, "session_replay.json" if replay else "session.json"),
@@ -434,7 +484,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.recent.append((sc, xy))
             self.recent = self.recent[-20:]
             if newly:
-                QtWidgets.QApplication.beep()
+                if self.cb_beep.currentText() == BEEP_OFF:
+                    QtWidgets.QApplication.beep()       # con lai da co tieng keo dai
                 self._snapshot()
                 self.alog.mark_snap(self.src.now())
         if scans:
@@ -487,7 +538,12 @@ class MainWindow(QtWidgets.QMainWindow):
             col = (230, 120, 0) if tr.lost_since is not None else (220, 30, 30) if tr.in_zone else (30, 90, 200)
             path = pg.PlotDataItem(tr.x, tr.y, pen=pg.mkPen(col, width=2))
             self.plot.addItem(path); self.obj_items.append(path)
-            lab = pg.TextItem(self._track_text(tr), color=col, anchor=(0, 0)); lab.setPos(tr.x[-1], tr.y[-1])
+            txt = self._track_text(tr)
+            if tr.lost_since is not None:                # danh dau diem cuoi truoc khi mat tin hieu
+                mark = pg.ScatterPlotItem([tr.x[-1]], [tr.y[-1]], symbol="x", size=18, pen=pg.mkPen(col, width=3), brush=pg.mkBrush(*col))
+                self.plot.addItem(mark); self.obj_items.append(mark)
+                txt += "\nđiểm cuối (%.2f, %.2f)" % (tr.x[-1], tr.y[-1])
+            lab = pg.TextItem(txt, color=col, anchor=(0, 0)); lab.setPos(tr.x[-1], tr.y[-1])
             self.plot.addItem(lab); self.obj_items.append(lab)
             lines.append("%s, rộng %.2f m%s" % (self._track_text(tr), tr.size, ", trong vùng %.0f s" % (tr.t[-1] - tr.zone_since) if tr.in_zone else ""))
         self.lb_tracks.setText("Đối tượng: %d" % len(self.tracker.visible()) + ("\n" + "\n".join(lines) if lines else ""))
@@ -572,16 +628,23 @@ class MainWindow(QtWidgets.QMainWindow):
         bg = {None: "#9e9e9e", True: "#c62828", False: "#2e7d32"}[alarm]
         self.lb_alarm.setStyleSheet("background:%s;color:white;font-size:16px;font-weight:bold;border-radius:6px" % bg)
 
-    def _beep_tick(self):
+    def _sound_state(self):
+        """long: dang thay doi tuong theo dieu kien da chon; pulse: khong con thay ai ma con vat bien mat trong vung."""
         s, mode = self.src, self.cb_beep.currentText()
         if not s or mode == BEEP_OFF or (isinstance(s, core.ReplaySource) and (s.paused or s.finished)):
-            return
-        if mode == BEEP_ZONE:
-            on = any(tr.in_zone for tr in self.tracker.confirmed())      # ca vat dang giu vi bien mat
+            return "off"
+        vis = self.tracker.visible()
+        if mode == BEEP_MOVE:
+            active = any(tr.moving for tr in vis)
         else:
-            on = any(tr.moving for tr in self.tracker.visible())
-        if on:
-            self._beep_move()
+            active = any(tr.in_zone for tr in vis) if len(self.det.zone) >= 3 else bool(vis)
+        return "long" if active else "pulse" if self.tracker.lost_in_zone() else "off"
+
+    def _beep_tick(self):
+        state = self._sound_state()
+        self.player.set(state)
+        if not self.player.ok and state != "off":
+            QtWidgets.QApplication.beep()
 
     def _drain_entries(self):
         if self.elog:
@@ -592,35 +655,47 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tracker.entries = []
         for tr in self.tracker.tracks:
             tr.entry = None                             # doi tuong con trong vung se duoc tinh thanh luot moi
+        self.sel_mark.setData([], []); self.sel_text.setText("")
         self._update_entries()
+
+    def _clock(self, t):
+        """Truc tiep: gio he thong. Phat lai: thoi gian tinh tu luc bat dau phat."""
+        if self.wall_off is not None:
+            return time.strftime("%H:%M:%S", time.localtime(t + self.wall_off))
+        return self._fmt_time(max(t - self.t_start, 0))
 
     def _update_entries(self):
         es = self.tracker.entries
+        lost_now = {id(tr.entry) for tr in self.tracker.lost_in_zone()}
         inside = sum(e["t_out"] is None for e in es)
-        self.lb_entry.setText("Tổng lượt vào: %d | Số đối tượng: %d | Đang trong vùng: %d" % (len(es), len({e["id"] for e in es}), inside))
-        rel = lambda t: self._fmt_time(max(t - self.t_start, 0)) if self.src else "-"
-        self.tb_entry.setRowCount(min(len(es), 50))
-        for row, e in enumerate(reversed(es[-50:])):    # luot moi nhat o tren
-            end = e["t_out"] if e["t_out"] is not None else self.tracker_now(e)
-            cells = ("#%d" % e["id"], rel(e["t_in"]), rel(e["t_out"]) if e["t_out"] is not None else "đang ở trong",
-                     "%.0f s%s" % (end - e["t_in"], ", " + e["note"] if e["note"] else ""))
+        self.lb_entry.setText("Tổng lượt vào: %d | Số đối tượng: %d | Đang trong vùng: %d | Đang mất tín hiệu: %d"
+                              % (len(es), len({e["id"] for e in es}), inside, len(lost_now)))
+        self.entry_view = list(reversed(es[-200:]))     # luot moi nhat o tren
+        v = lambda x: "-" if x is None else "%.2f" % x
+        self.tb_entry.setRowCount(len(self.entry_view))
+        for row, e in enumerate(self.entry_view):
+            end = e["t_out"] if e["t_out"] is not None else e["t_last"]
+            if id(e) in lost_now:
+                state = "Đang mất tín hiệu"
+            elif e["t_out"] is None:
+                state = "Đang ở trong vùng"
+            else:
+                state = e["note"]
+            cells = ("#%d" % e["id"], self._clock(e["t0"]), self._clock(e["t_in"]), self._clock(e["t_out"]) if e["t_out"] is not None else "-",
+                     "%.1f" % (end - e["t_in"]), v(e["v_in"]), v(e["v_sum"] / e["v_n"] if e["v_n"] else None), v(e["v_max"] if e["v_n"] else None),
+                     "%.2f" % e["size"], "(%.2f, %.2f)" % (e["x_last"], e["y_last"]), str(e["n_lost"]), state)
             for col, txt in enumerate(cells):
-                self.tb_entry.setItem(row, col, QtWidgets.QTableWidgetItem(txt))
+                it = QtWidgets.QTableWidgetItem(txt)
+                if state in ("Đang mất tín hiệu", "Mất tín hiệu", "Hết giờ giữ"):
+                    it.setForeground(QtGui.QColor("#c25e00"))
+                self.tb_entry.setItem(row, col, it)
 
-    def tracker_now(self, e):
-        for tr in self.tracker.tracks:
-            if tr.entry is e:
-                return tr.t[-1]
-        return e["t_in"]
-
-    @staticmethod
-    def _beep_move():
-        """Tieng ngan, khac tieng bao dong. Chay luong rieng vi winsound.Beep lam dung chuong trinh trong luc keu."""
-        try:
-            import winsound
-            threading.Thread(target=winsound.Beep, args=(1500, 120), daemon=True).start()
-        except ImportError:
-            QtWidgets.QApplication.beep()
+    def _on_entry_click(self, row, _col):
+        if 0 <= row < len(self.entry_view):
+            e = self.entry_view[row]
+            self.sel_mark.setData([e["x_last"]], [e["y_last"]])
+            self.sel_text.setText("#%d điểm cuối (%.2f, %.2f)" % (e["id"], e["x_last"], e["y_last"]))
+            self.sel_text.setPos(e["x_last"], e["y_last"])
 
     def _drain_tracker_events(self, sc=None):
         name = {"MAT_TIN_HIEU": "MẤT TÍN HIỆU", "NOI_LAI": "NỐI LẠI", "HET_GIU": "HẾT GIỮ"}
@@ -772,6 +847,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.det.events.append((time.time(), "INFO", "Không lưu được cấu hình: %s" % e))
 
     def closeEvent(self, e):
+        self.beep_timer.stop(); self.player.set("off")
         self._save_timer.stop()
         if self.src:
             self.tracker.close_open(); self._drain_entries()
