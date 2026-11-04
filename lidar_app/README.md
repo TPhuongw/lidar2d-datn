@@ -39,6 +39,23 @@ App từ chối các tổ hợp sai điều kiện trên. Cấu hình được l
 3. **Học nền** khi vùng cấm đang trống và bản đồ đã đứng yên (mặc định 20 vòng). Nền lưu theo góc thô nên không phụ thuộc r0 / Xoay. Nền không được lưu khi đóng app. Chưa học nền thì app hiện CHƯA HỌC NỀN và không báo động, trừ khi tắt dùng nền.
 4. Khi có vật trong vùng cấm liên tiếp *N* vòng (mặc định 3): ô trạng thái chuyển đỏ, có tiếng beep, ghi nhật ký và lưu ảnh vào `su_kien/`.
 
+## Log mốc thời gian báo động
+Mỗi lần chạy Trực tiếp, app ghi `alarm.csv` vào thư mục log; phát lại thì ghi `alarm_replay.csv`. Mỗi lần báo động là một dòng `BAO_DONG`, mỗi lần hết báo động là một dòng `HET`. Các mốc `t_*` dùng chung đồng hồ với `t_pc` trong `tf03_raw.csv`.
+
+| Cột | Ý nghĩa |
+|---|---|
+| `t_first_hit` | Tia chạm vật ở vòng đầu của chuỗi vòng liên tiếp (ước lượng từ góc) |
+| `t_scan_end` | Hết vòng gây báo động |
+| `t_ready` | Mapper trả về vòng đó |
+| `t_alarm` | Detector bật báo động |
+| `t_snap` | Xong beep và lưu ảnh |
+| `t_shown` | Đã vẽ lại ô trạng thái màu đỏ |
+| `tre_hit_den_shown_s` | `t_shown − t_first_hit` (s) |
+| `t_wall` | Giờ hệ thống, để đối chiếu với video |
+
+- Log không đo được lúc vật thực sự vào vùng. Khoảng này cần đo bằng camera hoặc cảm biến ngoài.
+- Khi phát lại, đồng hồ chỉ tiến theo từng nhịp giao diện nên `t_alarm`, `t_snap`, `t_shown` trùng nhau. Chỉ số của chế độ Trực tiếp mới dùng được để đánh giá các khâu này.
+
 ## Tham số phát hiện
 | Tham số | Ý nghĩa |
 |---|---|

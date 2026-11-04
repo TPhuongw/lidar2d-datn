@@ -71,6 +71,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.draft = []
         self.n_ev_shown = 0
         self.rate_hist = []                 # (t, n_frames) tinh toc do khung
+        self.alog = None                    # log moc thoi gian bao dong
         self._build_ui()
         self._apply_detect_params()
         self._draw_zone()
@@ -245,6 +246,8 @@ class MainWindow(QtWidgets.QMainWindow):
                                            self.sp_rps.value(), tf_baud=int(self.cb_baud.currentText()),
                                            logdir=os.path.join(HERE, time.strftime("log_%Y%m%d_%H%M%S")))
             self.src.start()
+            name = "alarm_replay.csv" if isinstance(self.src, core.ReplaySource) else "alarm.csv"   # phat lai khong tron voi so do that
+            self.alog = detect.AlarmLog(os.path.join(self.src.logdir, name))
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Lỗi", str(e)); self.src = None; return
         self.bt_start.setText("Dừng")
@@ -305,9 +308,11 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.src.tick()
         scans = self.mapper.process()
+        t_ready = self.src.now()
         for sc in scans:
             xy = core.to_xy(sc, **self._xy_params())
             objs, fg, newly = self.det.step(xy)
+            self.alog.on_scan(sc, objs, newly, self.det, t_ready, self.src.now())
             xy["fg"], xy["objs"] = fg, objs
             self.last_scan = sc
             self.recent.append((sc, xy))
@@ -315,10 +320,14 @@ class MainWindow(QtWidgets.QMainWindow):
             if newly:
                 QtWidgets.QApplication.beep()
                 self._snapshot()
+                self.alog.mark_snap(self.src.now())
         if scans:
             self._draw()
         self._update_status()
         self._update_events()
+        if self.alog.row:
+            self.lb_alarm.repaint()                     # ve ngay de t_shown sat luc o chuyen do
+            self.alog.finish(self.src.now())
         if isinstance(self.src, core.ReplaySource) and self.src.finished and not scans:
             self.lb_warn.setText("Phát lại xong.")
 

@@ -13,6 +13,7 @@ Cac buoc cho moi vong quet:
      het bao dong khi khong con vat 'off_revs' vong lien tiep.
 """
 import math
+import os
 import time
 from dataclasses import dataclass, field
 
@@ -41,6 +42,7 @@ class Obj:
     n: int
     xs: np.ndarray = field(repr=False, default=None)
     ys: np.ndarray = field(repr=False, default=None)
+    a0: float = 0.0                     # goc tho nho nhat cua cum (do), de tinh thoi diem tia cham vat
 
 
 class Background:
@@ -89,7 +91,7 @@ def cluster(ang, x, y, gap=0.2, min_pts=3, min_size=0.1):
     if len(x) == 0:
         return []
     o = np.argsort(ang)
-    x, y = x[o], y[o]
+    a_, x, y = np.asarray(ang)[o], x[o], y[o]
     d = np.hypot(np.diff(x), np.diff(y))
     cuts = np.r_[0, np.where(d > gap)[0] + 1, len(x)]
     objs = []
@@ -99,7 +101,7 @@ def cluster(ang, x, y, gap=0.2, min_pts=3, min_size=0.1):
         cx_, cy_ = x[a:b], y[a:b]
         size = float(math.hypot(np.ptp(cx_), np.ptp(cy_)))
         if size >= min_size or b - a >= 3 * min_pts:
-            objs.append(Obj(float(cx_.mean()), float(cy_.mean()), size, b - a, cx_, cy_))
+            objs.append(Obj(float(cx_.mean()), float(cy_.mean()), size, b - a, cx_, cy_, float(a_[a])))
     return objs
 
 
@@ -148,3 +150,55 @@ class Detector:
                 self.alarm = False
                 self.events.append((time.time(), "HẾT", "Vùng cấm trống"))
         return objs, fg, newly
+
+
+class AlarmLog:
+    """Ghi moc thoi gian tung bao dong ra CSV de do tre tung khau. Cac moc t_* cung dong ho voi t_pc trong tf03_raw.csv.
+
+    t_first_hit : tia cham vat o vong dau cua chuoi vong lien tiep (uoc luong tu goc: t moc + a0/360 * T)
+    t_scan_end  : het vong gay bao dong (moc 0 do tiep theo)
+    t_ready     : Mapper tra ve vong do
+    t_alarm     : Detector bat bao dong
+    t_snap      : xong beep + luu anh
+    t_shown     : da ve lai o trang thai mau do
+    t_wall      : gio he thong (s), de doi chieu voi video
+    Khong do duoc luc vat thuc su vao vung: khoang do can camera hoac cam bien ngoai.
+    """
+    HEAD = ("kieu,seq,seq_first,n_revs,on_revs,T_s,t_first_hit,t_scan_end,t_ready,t_alarm,t_snap,t_shown,"
+            "tre_hit_den_shown_s,t_wall,cx_m,cy_m,size_m,n_diem\n")
+
+    def __init__(self, path):
+        self.path, self.run, self.row, self.was_alarm = path, None, None, False
+
+    def _write(self, line):
+        new = not os.path.exists(self.path)
+        with open(self.path, "a", encoding="utf-8") as f:   # mo-dong moi dong: app chet giua chung van con log
+            f.write((self.HEAD if new else "") + line)
+
+    def on_scan(self, sc, objs, newly, det, t_ready, t_alarm):
+        if objs and self.run is None:                       # vong dau cua chuoi lien tiep (cung logic _on cua Detector)
+            self.run = (sc.seq, sc.t + min(o.a0 for o in objs) / 360.0 * sc.period)
+        elif not objs:
+            self.run = None
+        if newly and self.run:
+            big = max(objs, key=lambda o: o.size)
+            self.row = dict(sc=sc, on=det.on_revs, first=self.run, t_ready=t_ready, t_alarm=t_alarm, t_snap=t_alarm, big=big)
+        elif self.was_alarm and not det.alarm:
+            self._write("HET,%d,,,,%.6f,,%.6f,%.6f,%.6f,,,,%.3f,,,,\n" % (
+                sc.seq, sc.period, sc.t + sc.period, t_ready, t_alarm, time.time()))
+        self.was_alarm = det.alarm
+
+    def mark_snap(self, t):
+        if self.row:
+            self.row["t_snap"] = t
+
+    def finish(self, t_shown):
+        """Goi sau khi da ve o trang thai; tra ve do tre tu luc tia cham vat (s) hoac None."""
+        r, self.row = self.row, None
+        if r is None:
+            return None
+        sc, big, (seq0, t_hit) = r["sc"], r["big"], r["first"]
+        self._write("BAO_DONG,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%d\n" % (
+            sc.seq, seq0, sc.seq - seq0 + 1, r["on"], sc.period, t_hit, sc.t + sc.period, r["t_ready"], r["t_alarm"],
+            r["t_snap"], t_shown, t_shown - t_hit, time.time(), big.cx, big.cy, big.size, big.n))
+        return t_shown - t_hit
