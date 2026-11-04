@@ -62,12 +62,16 @@ Sau khi học nền, app nối các cụm khác nền giữa các vòng thành �
 
 - **Trên bản đồ:** quỹ đạo 30 s gần nhất, màu đỏ khi trong vùng cấm, xanh khi ngoài vùng, kèm số thứ tự và tốc độ hoặc thời gian đứng yên.
 - **Log:** `tracks.csv` khi chạy Trực tiếp, `tracks_replay.csv` khi phát lại. Mỗi lần đo một dòng, cột `t` cùng đồng hồ với `t_pc`.
+- **Trên góc bản đồ và mục Trạng thái:** thời gian và số đối tượng đang có, trong đó bao nhiêu trong vùng cấm. Khi phát lại, thời gian hiện dạng `đã phát / tổng`; khi chạy Trực tiếp là thời gian đã chạy.
+- **Gộp đối tượng:** hai đối tượng cách nhau dưới *Gộp khi cách dưới* (mặc định 0,6 m) và lệch vận tốc dưới *Gộp khi lệch tốc độ dưới* (mặc định 0,25 m/s) liên tục 1,5 s thì tính là một, giữ số thứ tự cũ hơn và hiện `(gộp 2)`. Sau đó nếu một phần đi xa hơn 1,5 lần ngưỡng khoảng cách thì tách thành đối tượng mới. Đặt ngưỡng khoảng cách bằng 0 để tắt.
 - Theo dõi không ảnh hưởng đến báo động. Đổi Xoay hoặc Đảo chiều thì đối tượng được đánh số lại.
 
 Giới hạn:
 - Tâm cụm là tâm mặt nhìn thấy, nên lệch về phía LiDAR so với tâm vật (khoảng 0,1 m với trụ bán kính 0,2 m trong log giả lập).
 - Tốc độ lấy từ cửa sổ khoảng 2 s nên phản ứng chậm khi vật đổi tốc độ.
-- Hai vật đi sát nhau dưới 0,35 m được tính là một.
+- Hai vật đi sát nhau dưới 0,35 m được tính là một ngay từ khâu gom cụm. Số đối tượng vì vậy không phải số người.
+- Khi đối tượng đang ở trạng thái gộp, một vật lạ đi qua trong phạm vi 1,5 lần ngưỡng khoảng cách sẽ bị gom tạm vào.
+- Gộp đối tượng mới được kiểm tra với quỹ đạo tự tạo. Hai log phần cứng hiện có không có lần gộp nào.
 - Tốc độ mới được kiểm tra với quỹ đạo giả lập, chưa đối chiếu với phép đo thật trên phần cứng. Góc vẫn tính theo thời gian, nên chưa dùng làm số liệu đánh giá.
 
 ## Tham số phát hiện

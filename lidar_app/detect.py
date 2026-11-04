@@ -198,6 +198,9 @@ class Track:
     speed: float = None                 # m/s, None khi chua du du lieu
     still_since: float = None           # thoi diem bat dau dung yen
     zone_since: float = None            # thoi diem vao vung cam
+    merged: int = 0                     # so doi tuong khac da gop vao
+    absorb_t: float = None              # lan cuoi con gom them cum khac
+    v_t0: float = None                  # chi tinh toc do tu sau moc nay (tam nhay khi vua gop)
 
 
 class Tracker:
@@ -206,22 +209,28 @@ class Tracker:
     Moi cum co thoi diem rieng (t moc + a0/360 * T) vi tia quet toi moi huong vao mot luc khac nhau.
     Khong anh huong logic bao dong cua Detector.
     Tam cum la tam mat nhin thay, khong phai tam vat. Toc do chua duoc doi chieu voi phep do doc lap.
+
+    Gop doi tuong: 2 doi tuong gan nhau (< merge_d) va cung van toc (lech < merge_dv) lien tuc merge_s giay
+    thi tinh la mot, giu so thu tu cu hon. Sau khi gop, cum nam gan (< 1,5 * merge_d) duoc gom vao doi tuong
+    do; cum di xa hon thi tach thanh doi tuong moi. merge_d = 0 la tat.
     """
 
-    def __init__(self, gate=0.4, vmax=3.0, merge=0.35, miss_s=1.5, confirm=3, win_s=2.0, still_r=0.15, still_v=0.1, hist_s=30.0):
+    def __init__(self, gate=0.4, vmax=3.0, merge=0.35, miss_s=1.5, confirm=3, win_s=2.0, still_r=0.15, still_v=0.1, hist_s=30.0,
+                 merge_d=0.6, merge_dv=0.25, merge_s=1.5, absorb_s=3.0):
         self.gate, self.vmax, self.merge = gate, vmax, merge    # m, m/s, m
+        self.merge_d, self.merge_dv, self.merge_s, self.absorb_s = merge_d, merge_dv, merge_s, absorb_s
         self.miss_s, self.confirm = miss_s, confirm             # bo sau bay nhieu s khong thay; xac nhan sau bay nhieu lan
         self.win_s, self.still_r, self.still_v, self.hist_s = win_s, still_r, still_v, hist_s
         self.reset()
 
     def reset(self):
-        self.tracks, self.next_id = [], 1
+        self.tracks, self.next_id, self._pairs = [], 1, {}
 
     def confirmed(self):
         return [tr for tr in self.tracks if tr.hits >= self.confirm]
 
     def _measure(self, sc, objs):
-        """Gop cum sat nhau (mot vat bi tach, vi du tay va than) thanh mot phep do (t, x, y, size)."""
+        """Gop cum sat nhau (mot vat bi tach, vi du tay va than) thanh mot phep do (t, x, y, size, xs, ys)."""
         groups = []
         for o in objs:
             hit = [g for g in groups if any(np.min(np.hypot(p.xs[:, None] - o.xs, p.ys[:, None] - o.ys)) < self.merge for p in g)]
@@ -232,22 +241,52 @@ class Tracker:
         for g in groups:
             xs, ys = np.concatenate([o.xs for o in g]), np.concatenate([o.ys for o in g])
             a0 = min(o.a0 for o in g)
-            out.append((sc.t + a0 / 360.0 * sc.period, float(xs.mean()), float(ys.mean()), float(math.hypot(np.ptp(xs), np.ptp(ys)))))
+            out.append(self._meas(sc.t + a0 / 360.0 * sc.period, xs, ys))
         return out
+
+    @staticmethod
+    def _meas(t, xs, ys):
+        return t, float(xs.mean()), float(ys.mean()), float(math.hypot(np.ptp(xs), np.ptp(ys))), xs, ys
+
+    def _pred_dist(self, tr, m):
+        dt = max(m[0] - tr.t[-1], 0.0)
+        return math.hypot(m[1] - tr.x[-1] - tr.vx * dt, m[2] - tr.y[-1] - tr.vy * dt), dt
+
+    def _merge_tracks(self, sc, now):
+        conf = [tr for tr in self.confirmed() if tr.speed is not None and tr.t[-1] >= sc.t]
+        close = set()
+        for k, a in enumerate(conf):
+            for b in conf[k + 1:]:
+                if math.hypot(a.x[-1] - b.x[-1], a.y[-1] - b.y[-1]) < self.merge_d and \
+                        math.hypot(a.vx - b.vx, a.vy - b.vy) < self.merge_dv:
+                    close.add((min(a.id, b.id), max(a.id, b.id)))
+        self._pairs = {k: self._pairs.get(k, now) for k in close}
+        by_id = {tr.id: tr for tr in self.tracks}
+        for (ia, ib), since in sorted(self._pairs.items()):
+            a, b = by_id.get(ia), by_id.get(ib)
+            if a is None or b is None or now - since < self.merge_s:
+                continue
+            a.merged += b.merged + 1; a.absorb_t = now; a.v_t0 = a.t[-1]
+            for name in ("still_since", "zone_since"):
+                vals = [v for v in (getattr(a, name), getattr(b, name)) if v is not None]
+                setattr(a, name, min(vals) if vals else None)
+            self.tracks.remove(b); del by_id[ib]
+        self._pairs = {k: v for k, v in self._pairs.items() if k[0] in by_id and k[1] in by_id}
 
     def _refresh(self, tr):
         t = np.array(tr.t)
         # it nhat 3 diem gan nhat: quay cham hoac mat vai vong thi cua so thoi gian co the chi con 2 diem
         i0 = max(0, min(int(np.searchsorted(t, t[-1] - self.win_s)), len(t) - 3))
+        if tr.v_t0 is not None:
+            i0 = max(i0, int(np.searchsorted(t, tr.v_t0, side="right")))
         tw, xw, yw = t[i0:], np.array(tr.x)[i0:], np.array(tr.y)[i0:]
-        span = tw[-1] - tw[0]
-        if len(tw) >= 3 and span >= 1.0:
+        if len(tw) >= 3 and tw[-1] - tw[0] >= 1.0:
             tr.vx, tr.vy = float(np.polyfit(tw, xw, 1)[0]), float(np.polyfit(tw, yw, 1)[0])
             tr.speed = math.hypot(tr.vx, tr.vy)
             spread = np.max(np.hypot(xw - xw.mean(), yw - yw.mean()))
             # tam cum dao dong theo mat nhin thay, nen cho phep rong hon neu tam khong troi di dau;
             # gioi han 2 * still_r de nguoi di qua lai (van toc trung binh ~ 0) khong bi tinh la dung
-            still = span >= 1.5 and (spread < self.still_r or (tr.speed < self.still_v and spread < 2 * self.still_r))
+            still = spread < self.still_r or (tr.speed < self.still_v and spread < 2 * self.still_r)
             tr.still_since = (tr.still_since if tr.still_since is not None else float(tw[0])) if still else None
         keep = t >= t[-1] - self.hist_s
         tr.t, tr.x, tr.y = [v for v, c in zip(tr.t, keep) if c], [v for v, c in zip(tr.x, keep) if c], [v for v, c in zip(tr.y, keep) if c]
@@ -257,26 +296,38 @@ class Tracker:
         meas = self._measure(sc, objs)
         pairs = []
         for i, tr in enumerate(self.tracks):
-            for j, (t, x, y, _) in enumerate(meas):
-                dt = max(t - tr.t[-1], 0.0)
-                d = math.hypot(x - tr.x[-1] - tr.vx * dt, y - tr.y[-1] - tr.vy * dt)
+            for j, m in enumerate(meas):
+                d, dt = self._pred_dist(tr, m)
                 # doi tuong da co huong: du doan tot hon nen cua so hep hon
                 if d <= self.gate + self.vmax * dt * (1.0 if tr.hits < self.confirm else 0.5):
                     pairs.append((d, i, j))
-        used_t, used_m = set(), set()
+        now = sc.t + sc.period
+        got, used_m = {}, set()
         for d, i, j in sorted(pairs):
-            if i in used_t or j in used_m:
+            if i in got or j in used_m:
                 continue
-            used_t.add(i); used_m.add(j)
-            tr, (t, x, y, size) = self.tracks[i], meas[j]
+            got[i] = [j]; used_m.add(j)
+        for i, tr in enumerate(self.tracks):                    # doi tuong da gop gom them cac cum con gan
+            if tr.merged and now - tr.absorb_t > self.absorb_s:
+                tr.merged = 0                                   # lau khong con cum thu hai: da la mot vat
+            if not tr.merged:
+                continue
+            for j, m in enumerate(meas):
+                if j not in used_m and self._pred_dist(tr, m)[0] < 1.5 * self.merge_d:
+                    got.setdefault(i, []).append(j); used_m.add(j); tr.absorb_t = now
+        for i, js in got.items():
+            tr = self.tracks[i]
+            t, x, y, size = self._meas(min(meas[j][0] for j in js), np.concatenate([meas[j][4] for j in js]),
+                                       np.concatenate([meas[j][5] for j in js]))[:4]
             tr.t.append(t); tr.x.append(x); tr.y.append(y); tr.size = size; tr.hits += 1
             self._refresh(tr)
-        for j, (t, x, y, size) in enumerate(meas):
+        for j, m in enumerate(meas):
             if j not in used_m:
-                self.tracks.append(Track(self.next_id, [t], [x], [y], size, False))
+                self.tracks.append(Track(self.next_id, [m[0]], [m[1]], [m[2]], m[3], False))
                 self.next_id += 1
-        now = sc.t + sc.period
         self.tracks = [tr for tr in self.tracks if now - tr.t[-1] <= self.miss_s]
+        if self.merge_d > 0:
+            self._merge_tracks(sc, now)
         for tr in self.tracks:
             tr.in_zone = len(zone) >= 3 and bool(point_in_polygon(np.array([tr.x[-1]]), np.array([tr.y[-1]]), zone)[0])
             tr.zone_since = (tr.zone_since if tr.zone_since is not None else tr.t[-1]) if tr.in_zone else None
@@ -285,7 +336,7 @@ class Tracker:
 
 class TrackLog:
     """Ghi vi tri va toc do doi tuong da xac nhan, moi lan do mot dong. t cung dong ho voi t_pc."""
-    HEAD = "id,t,x_m,y_m,vx_m_s,vy_m_s,v_m_s,dung_s,trong_vung,trong_vung_s,size_m\n"
+    HEAD = "id,t,x_m,y_m,vx_m_s,vy_m_s,v_m_s,dung_s,trong_vung,trong_vung_s,size_m,so_da_gop\n"
 
     def __init__(self, path):
         self.path = path
@@ -296,10 +347,10 @@ class TrackLog:
             if tr.t[-1] < sc.t:                         # vong nay khong thay doi tuong, khong co phep do moi
                 continue
             t = tr.t[-1]
-            rows.append("%d,%.6f,%.3f,%.3f,%.3f,%.3f,%s,%s,%d,%s,%.3f\n" % (
+            rows.append("%d,%.6f,%.3f,%.3f,%.3f,%.3f,%s,%s,%d,%s,%.3f,%d\n" % (
                 tr.id, t, tr.x[-1], tr.y[-1], tr.vx, tr.vy, "" if tr.speed is None else "%.3f" % tr.speed,
                 "" if tr.still_since is None else "%.2f" % (t - tr.still_since), tr.in_zone,
-                "" if tr.zone_since is None else "%.2f" % (t - tr.zone_since), tr.size))
+                "" if tr.zone_since is None else "%.2f" % (t - tr.zone_since), tr.size, tr.merged))
         if rows:
             new = not os.path.exists(self.path)
             with open(self.path, "a", encoding="utf-8") as f:

@@ -28,7 +28,7 @@ SETTINGS = os.path.join(HERE, "settings.json")
 BG_FILE = os.path.join(HERE, "nen.npz")
 DEFAULTS = dict(tf_port="COM12", uno_port="COM10", tf_baud=115200, tf_hz=1000, rps=1.0, r0=0.0, offset=0.0, dir=1, maxcm=3000, minstr=0,
                 accum=1, color="cường độ", view=5.0, zone=[], margin=0.15, min_size=0.10, on_revs=3,
-                learn_revs=20, replay_dir="", replay_speed=1.0, lock_cal=False)
+                learn_revs=20, replay_dir="", replay_speed=1.0, lock_cal=False, merge_d=0.6, merge_dv=0.25)
 
 
 def list_ports():
@@ -102,6 +102,10 @@ class MainWindow(QtWidgets.QMainWindow):
         for it in (self.zone_item, self.sc, self.sc_fg, self.draft_item, origin):
             self.plot.addItem(it)
         self.plot.scene().sigMouseClicked.connect(self.on_click)
+        self.lb_ov = QtWidgets.QLabel(self.plot)        # thoi gian va so doi tuong, nam tren ban do
+        self.lb_ov.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+        self.lb_ov.setStyleSheet("background:rgba(255,255,255,210);color:#222;font-size:15px;font-weight:bold;padding:4px 8px;border-radius:4px")
+        self.lb_ov.move(70, 10); self.lb_ov.hide()
         self.lut = np.array([pg.mkBrush(c) for c in pg.colormap.get("viridis").map(np.linspace(0, 1, 64), mode="qcolor")],
                             dtype=object)        # bang mau dung san: tao brush tung diem qua cham, lam tre luong doc COM
 
@@ -160,13 +164,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.st = {}
         for i, (k, name) in enumerate([("rps", "Tốc độ quay"), ("jit", "Dao động chu kỳ"), ("pts", "Điểm / vòng"),
                                        ("valid", "Điểm hợp lệ"), ("rate", "Khung TF03 / s"), ("bad", "Khung lỗi"),
-                                       ("idx", "Số mốc 0°"), ("rev", "Vòng")]):
+                                       ("idx", "Số mốc 0°"), ("rev", "Vòng"), ("time", "Thời gian")]):
             grid.addWidget(QtWidgets.QLabel(name), i, 0)
             self.st[k] = QtWidgets.QLabel("-"); self.st[k].setAlignment(QtCore.Qt.AlignRight)
             grid.addWidget(self.st[k], i, 1)
         self.lb_warn = QtWidgets.QLabel(""); self.lb_warn.setWordWrap(True)
         self.lb_warn.setStyleSheet("color:#b00020;font-weight:bold")
-        grid.addWidget(self.lb_warn, 8, 0, 1, 2)
+        grid.addWidget(self.lb_warn, 9, 0, 1, 2)
         lay.addWidget(g)
 
         # --- hien thi
@@ -216,7 +220,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sp_margin = dspin(0.02, 2, 0.05, self.cfg["margin"])
         self.sp_size = dspin(0.0, 5, 0.05, self.cfg["min_size"])
         self.sp_on = ispin(1, 50, 1, self.cfg["on_revs"])
-        for w_, lab in ((self.sp_margin, "Gần hơn nền (m)"), (self.sp_size, "Vật nhỏ nhất (m)"), (self.sp_on, "Báo khi liên tiếp (vòng)")):
+        self.sp_mg_d = dspin(0, 3, 0.05, self.cfg["merge_d"])
+        self.sp_mg_dv = dspin(0, 3, 0.05, self.cfg["merge_dv"])
+        for w_, lab in ((self.sp_margin, "Gần hơn nền (m)"), (self.sp_size, "Vật nhỏ nhất (m)"), (self.sp_on, "Báo khi liên tiếp (vòng)"),
+                        (self.sp_mg_d, "Gộp khi cách dưới (m), 0 = tắt"), (self.sp_mg_dv, "Gộp khi lệch tốc độ dưới (m/s)")):
             f.addRow(lab, w_); w_.valueChanged.connect(self._apply_detect_params)
         self.lb_alarm = QtWidgets.QLabel("CHƯA CÓ VÙNG CẤM"); self.lb_alarm.setAlignment(QtCore.Qt.AlignCenter)
         self.lb_alarm.setMinimumHeight(44); self._set_alarm_style(None)
@@ -289,6 +296,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def toggle_run(self):
         if self.src:
             self.src.stop(); self.src = None
+            self.lb_ov.hide()
             self.bt_start.setText("Bắt đầu"); return
         self.mapper = core.Mapper(); self.recent = []; self.rate_hist = []
         try:
@@ -303,6 +311,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.alog = detect.AlarmLog(os.path.join(self.src.logdir, name))
             self.tlog = detect.TrackLog(os.path.join(self.src.logdir, name.replace("alarm", "tracks")))
             self.tracker.reset()
+            self.t_start = self.src.now()
+            self.lb_ov.show()
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Lỗi", str(e)); self.src = None; return
         self.bt_start.setText("Dừng")
@@ -432,13 +442,35 @@ class MainWindow(QtWidgets.QMainWindow):
             lab = pg.TextItem(self._track_text(tr), color=col, anchor=(0, 0)); lab.setPos(tr.x[-1], tr.y[-1])
             self.plot.addItem(lab); self.obj_items.append(lab)
             lines.append("%s, rộng %.2f m%s" % (self._track_text(tr), tr.size, ", trong vùng %.0f s" % (tr.t[-1] - tr.zone_since) if tr.in_zone else ""))
-        self.lb_tracks.setText("Đối tượng: " + ("\n" + "\n".join(lines) if lines else "không có"))
+        self.lb_tracks.setText("Đối tượng: %d" % len(lines) + ("\n" + "\n".join(lines) if lines else ""))
 
     @staticmethod
     def _track_text(tr):
+        gop = " (gộp %d)" % (tr.merged + 1) if tr.merged else ""
         if tr.still_since is not None:
-            return "#%d đứng yên %.0f s" % (tr.id, tr.t[-1] - tr.still_since)
-        return "#%d %s" % (tr.id, "%.2f m/s" % tr.speed if tr.speed is not None else "đang đo")
+            return "#%d%s đứng yên %.0f s" % (tr.id, gop, tr.t[-1] - tr.still_since)
+        return "#%d%s %s" % (tr.id, gop, "%.2f m/s" % tr.speed if tr.speed is not None else "đang đo")
+
+    @staticmethod
+    def _fmt_time(sec):
+        sec = int(sec)
+        return "%d:%02d:%02d" % (sec // 3600, sec // 60 % 60, sec % 60) if sec >= 3600 else "%02d:%02d" % (sec // 60, sec % 60)
+
+    def _time_text(self):
+        s = self.src
+        if isinstance(s, core.ReplaySource):
+            return "%s / %s" % (self._fmt_time(min(s.pos, s.duration)), self._fmt_time(s.duration))
+        return self._fmt_time(s.now() - self.t_start)
+
+    def _overlay_text(self):
+        if self.det.use_bg and not self.det.bg.ready():
+            count = "Đối tượng: chưa học nền"
+        elif not self.det.use_bg:
+            count = "Đối tượng: cần bật dùng nền"
+        else:
+            conf = self.tracker.confirmed()
+            count = "Đối tượng: %d (trong vùng: %d)" % (len(conf), sum(tr.in_zone for tr in conf))
+        return self._time_text() + "\n" + count
 
     def _update_status(self):
         m, s = self.mapper, self.src
@@ -458,6 +490,8 @@ class MainWindow(QtWidgets.QMainWindow):
             (t0, n0), (t1, n1) = self.rate_hist[0], self.rate_hist[-1]
             self.st["rate"].setText("%.0f" % ((n1 - n0) / (t1 - t0)))
         self.st["bad"].setText(str(s.bad_frames)); self.st["idx"].setText(str(m.n_idx))
+        self.st["time"].setText(self._time_text())
+        self.lb_ov.setText(self._overlay_text()); self.lb_ov.adjustSize()
         warn = []
         if s.err:
             warn.append("LỖI: " + s.err)
@@ -555,6 +589,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _apply_detect_params(self, *_):
         self.det.margin = self.sp_margin.value(); self.det.min_size = self.sp_size.value()
         self.det.on_revs = self.sp_on.value(); self.det.use_bg = self.ck_bg.isChecked()
+        self.tracker.merge_d, self.tracker.merge_dv = self.sp_mg_d.value(), self.sp_mg_dv.value()
 
     # ------------------------------------------------------------ luu
     def _outdir(self, sub):
@@ -589,7 +624,7 @@ class MainWindow(QtWidgets.QMainWindow):
                         color=self.cb_color.currentText(), zone=self.det.zone, margin=self.sp_margin.value(),
                         min_size=self.sp_size.value(), on_revs=self.sp_on.value(), learn_revs=self.sp_learn.value(),
                         replay_dir=self.le_dir.text(), replay_speed=float(self.cb_speed.currentText()),
-                        lock_cal=self.ck_lock.isChecked())
+                        lock_cal=self.ck_lock.isChecked(), merge_d=self.sp_mg_d.value(), merge_dv=self.sp_mg_dv.value())
         try:
             tmp = SETTINGS + ".tmp"
             with open(tmp, "w") as f:
