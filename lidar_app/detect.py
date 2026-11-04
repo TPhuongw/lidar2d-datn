@@ -125,6 +125,9 @@ class Detector:
             if done:
                 self.events.append((time.time(), "INFO", "Học nền xong"))
             return [], np.zeros(len(x), bool), False
+        if self.use_bg and not self.bg.ready():          # chua hoc nen -> khong phan biet duoc tuong voi vat
+            self.alarm, self._on, self._off = False, 0, 0
+            return [], np.zeros(len(x), bool), False
         fg = self.bg.foreground(ang, r, self.margin) if self.use_bg else np.ones(len(x), bool)
         if len(self.zone) >= 3:
             fg &= point_in_polygon(x, y, self.zone)

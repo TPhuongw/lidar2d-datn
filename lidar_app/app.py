@@ -10,7 +10,7 @@ Chuc nang:
 
 Cai dat:  pip install PySide6 pyqtgraph pyserial numpy
 Chay:     python app.py
-CODE THU NGHIEM: da chay voi log gia lap (phat lai), CHUA chay Live voi phan cung that.
+CODE THU NGHIEM: da chay voi log gia lap va chay Live voi UNO + TF03 that (04/11); chua dung lam so lieu danh gia.
 """
 import json, os, sys, time
 
@@ -389,6 +389,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.lb_warn.setText("\n".join(warn))
         if len(self.det.zone) < 3:
             self.lb_alarm.setText("CHƯA CÓ VÙNG CẤM"); self._set_alarm_style(None)
+        elif self.det.use_bg and not self.det.bg.ready():
+            self.lb_alarm.setText("CHƯA HỌC NỀN"); self._set_alarm_style(None)
         elif self.det.alarm:
             self.lb_alarm.setText("BÁO ĐỘNG: CÓ VẬT CẢN"); self._set_alarm_style(True)
         else:
