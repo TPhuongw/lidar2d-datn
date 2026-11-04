@@ -125,6 +125,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.rate_hist = []                 # (t, n_frames) tinh toc do khung
         self.alog = None                    # log moc thoi gian bao dong
         self.tracker, self.tlog, self.elog = detect.Tracker(), None, None
+        self.gate = detect.SpeedGate()
         self.session = None                 # thong so cua phien do dang chay
         self.t_start, self.wall_off, self.entry_view = 0.0, None, []   # wall_off: gio he thong - dong ho nguon (Truc tiep)
         self._save_timer = QtCore.QTimer(self, singleShot=True, interval=500, timeout=self._save_settings)
@@ -396,7 +397,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.alog = detect.AlarmLog(os.path.join(self.src.logdir, name))
             self.tlog = detect.TrackLog(os.path.join(self.src.logdir, name.replace("alarm", "tracks")))
             self.elog = detect.EntryLog(os.path.join(self.src.logdir, name.replace("alarm", "luot_vao")))
-            self.tracker.reset()
+            self.tracker.reset(); self.gate.reset()
             self.t_start = self.src.now()
             self.wall_off = None if isinstance(self.src, core.ReplaySource) else time.time() - self.src.now()
             self.sel_mark.setData([], []); self.sel_text.setText(""); self._update_entries()
@@ -404,6 +405,10 @@ class MainWindow(QtWidgets.QMainWindow):
             replay = isinstance(self.src, core.ReplaySource)            # phat lai khong ghi de thong so cua lan do that
             self.session = core.SessionLog(os.path.join(self.src.logdir, "session_replay.json" if replay else "session.json"),
                                            self.cfg, "Phát lại" if replay else "Trực tiếp", code_version())
+            bg = self.det.bg
+            self.session.d["nen_luc_bat_dau"] = dict(co_nen=bg.ready(), vong_s=None if bg.rps is None else round(bg.rps, 3),
+                                                     hoc_luc=None if bg.t_learn is None else time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(bg.t_learn)))
+            self.session._write()
             self.lb_ov.show()
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Lỗi", str(e)); self.src = None; return
@@ -468,17 +473,23 @@ class MainWindow(QtWidgets.QMainWindow):
         t_ready = self.src.now()
         for sc in scans:
             xy = core.to_xy(sc, **self._xy_params())
-            was_learning = self.det.bg.learning_left > 0
-            self.det.hold = self.tracker.hold_active(self.det.zone)
-            objs, fg, newly = self.det.step(xy)
-            if was_learning and self.det.bg.ready():
-                self.session.note("hoc_nen", self.src.now() - self.t_start, so_vong=self.sp_learn.value(), vong_s=round(1.0 / sc.period, 3))
-                if isinstance(self.src, core.LiveSource):
-                    self._save_bg(sc)                   # phat lai khong ghi de nen cua phan cung
-            self.alog.on_scan(sc, objs, newly, self.det, t_ready, self.src.now())
-            self.tlog.write(sc, self.tracker.update(sc, self.det.all_objs, self.det.zone))
-            self._drain_tracker_events(sc)
-            self._drain_entries()
+            bg = self.det.bg
+            bg_period = 1.0 / bg.rps if bg.ready() and bg.rps and bg.learning_left == 0 else None
+            if self.gate.update(sc.period, bg_period):
+                was_learning = self.det.bg.learning_left > 0
+                self.det.hold = self.tracker.hold_active(self.det.zone)
+                objs, fg, newly = self.det.step(xy)
+                if was_learning and self.det.bg.ready():
+                    self.det.bg.rps = 1.0 / sc.period
+                    self.session.note("hoc_nen", self.src.now() - self.t_start, so_vong=self.sp_learn.value(), vong_s=round(1.0 / sc.period, 3))
+                    if isinstance(self.src, core.LiveSource):
+                        self._save_bg(sc)               # phat lai khong ghi de nen cua phan cung
+                self.alog.on_scan(sc, objs, newly, self.det, t_ready, self.src.now())
+                self.tlog.write(sc, self.tracker.update(sc, self.det.all_objs, self.det.zone))
+                self._drain_tracker_events(sc)
+                self._drain_entries()
+            else:                                       # dong co chua on dinh: goc sai, chi hien ban do
+                objs, fg, newly = [], np.zeros(len(xy["x"]), bool), False
             xy["fg"], xy["objs"] = fg, objs
             self.last_scan = sc
             self.recent.append((sc, xy))
@@ -609,6 +620,9 @@ class MainWindow(QtWidgets.QMainWindow):
         T = float(np.median(P)) if len(P) else 1.0
         if m.t_last_idx is None or now - m.t_last_idx > 3 * T + 1:
             warn.append("Không nhận được mốc 0°")
+        if m.n_idx >= 2 and not self.gate.ok:
+            warn.append("Chu kỳ quay đo được khác lúc học nền: không phát hiện vật. Kiểm tra máy tính có bị quá tải không, hoặc học lại nền nếu đã đổi tốc độ" if self.gate.bg_mismatch
+                        else "Chờ tốc độ quay ổn định: chưa phát hiện vật")
         if self.det.bg.learning_left > 0:
             warn.append("Đang học nền: còn %d vòng" % self.det.bg.learning_left)
         if not (isinstance(s, core.ReplaySource) and s.finished):
@@ -698,7 +712,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sel_text.setPos(e["x_last"], e["y_last"])
 
     def _drain_tracker_events(self, sc=None):
-        name = {"MAT_TIN_HIEU": "MẤT TÍN HIỆU", "NOI_LAI": "NỐI LẠI", "HET_GIU": "HẾT GIỮ"}
+        name = {"MAT_TIN_HIEU": "MẤT TÍN HIỆU", "NOI_LAI": "NỐI LẠI", "HET_GIU": "HẾT GIỮ", "GOP_TACH": "NỐI CỤM TÁCH"}
         for kind, _, t, x, y, msg in self.tracker.events:
             self.det.events.append((time.time(), name[kind], msg))
             if self.alog:

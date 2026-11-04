@@ -34,6 +34,25 @@ def point_in_polygon(x, y, poly):
     return inside
 
 
+class SpeedGate:
+    """Chi coi la on dinh khi n vong lien tiep co chu ky lech nhau duoi tol, va lech chu ky luc hoc nen duoi tol.
+    Luc dong co tang toc, doi toc do hoac bi vuong, goc tinh theo thoi gian bi sai nen khong duoc phat hien va hoc nen.
+    Log 17:14: binh thuong chu ky chi dao dong 0,02 %; chu ky lech 0,5 % da lam 23 % so diem khac nen."""
+
+    def __init__(self, n=3, tol=0.003):
+        self.n, self.tol, self.hist, self.ok, self.bg_mismatch = n, tol, [], False, False
+
+    def reset(self):
+        self.hist, self.ok, self.bg_mismatch = [], False, False
+
+    def update(self, period, bg_period=None):
+        self.hist = (self.hist + [period])[-self.n:]
+        steady = len(self.hist) == self.n and (max(self.hist) - min(self.hist)) <= self.tol * min(self.hist)
+        self.bg_mismatch = bg_period is not None and abs(period - bg_period) > self.tol * bg_period
+        self.ok = steady and not self.bg_mismatch
+        return self.ok
+
+
 def poly_edge_dist(x, y, poly):
     """Khoang cach tu diem toi canh gan nhat cua da giac (m)."""
     best = math.inf
@@ -75,9 +94,11 @@ class Background:
         self.samples = []
         self.bg = None                      # khoang cach nen (m) theo o goc, inf = trong
         self.learning_left = 0
+        self.t_learn, self.rps = None, None # hoc luc nao, o toc do nao (de ghi vao session.json)
 
     def start_learning(self, n_revs=20):
         self.samples, self.learning_left, self.bg = [], n_revs, None
+        self.t_learn, self.rps = None, None
 
     def feed(self, ang_deg, r):
         """Cho 1 vong vao khi dang hoc. Tra ve True khi vua hoc xong."""
@@ -97,6 +118,7 @@ class Background:
             self.bg = np.where(valid, bg, np.inf)
             # lap lo trong giua cac o co nen: lay min hai ben (tranh bao gia o mep vat)
             self.bg = np.minimum(self.bg, np.minimum(np.roll(self.bg, 1), np.roll(self.bg, -1)))
+            self.t_learn = time.time()
             return True
         return False
 
@@ -119,6 +141,7 @@ class Background:
         if data["bin_deg"] != self.bin_deg or len(data["bg"]) != self.nb:
             raise ValueError("File nền không đúng độ phân giải góc.")
         self.bg, self.samples, self.learning_left = data["bg"] + data["r0"] - r0_now, [], 0
+        self.t_learn, self.rps = data["t"], data["rps"]
 
     def foreground(self, ang_deg, r, margin):
         if self.bg is None:
@@ -244,12 +267,13 @@ class Tracker:
 
     def __init__(self, gate=0.4, vmax=3.0, merge=0.35, miss_s=1.5, confirm=3, win_s=2.0, still_r=0.15, still_v=0.1, hist_s=30.0,
                  merge_d=0.6, merge_dv=0.25, merge_s=1.5, absorb_s=3.0,
-                 hold_s=60.0, reacq_r=0.6, min_life=3.0, edge_m=0.5, min_gap=0.5, move_v=0.2):
+                 hold_s=60.0, reacq_r=0.6, min_life=3.0, edge_m=0.5, min_gap=0.5, move_v=0.2, ghost_s=3.0):
         self.gate, self.vmax, self.merge = gate, vmax, merge    # m, m/s, m
         self.merge_d, self.merge_dv, self.merge_s, self.absorb_s = merge_d, merge_dv, merge_s, absorb_s
         self.hold_s, self.reacq_r, self.min_life, self.edge_m, self.min_gap = hold_s, reacq_r, min_life, edge_m, min_gap
         self.events = []                                        # (kieu, id, t, x, y, mo ta), giao dien lay roi xoa
         self.move_v = move_v                                    # m/s
+        self.ghost_s = ghost_s                                  # doi tuong moi sinh trong bay nhieu s co the la phan tach cua vat khac
         self.entries, self.closed = [], []                      # moi luot vao vung; cac luot vua dong, giao dien lay roi xoa
         self.miss_s, self.confirm = miss_s, confirm             # bo sau bay nhieu s khong thay; xac nhan sau bay nhieu lan
         self.win_s, self.still_r, self.still_v, self.hist_s = win_s, still_r, still_v, hist_s
@@ -341,6 +365,41 @@ class Tracker:
     @staticmethod
     def _meas(t, xs, ys, gap):
         return t, float(xs.mean()), float(ys.mean()), float(math.hypot(np.ptp(xs), np.ptp(ys))), xs, ys, gap
+
+    def _find_split(self, tr):
+        """tr vua het miss_s. Tim doi tuong dang thay ngay canh vi tri cuoi cua tr ma mot trong hai moi sinh: mot vat bi tach
+        cum roi cum phu nhan vi tri cua doi tuong cu. Hai doi tuong da song lau canh nhau thi khong tinh, de van giu vat cui."""
+        t_end = tr.t[-1]
+        for o in self.tracks:
+            if o is tr or o.lost_since is not None or o.t[-1] <= t_end or o.t0 is None or tr.t0 is None:
+                continue
+            k = int(np.searchsorted(o.t, t_end))
+            k = min(k, len(o.t) - 1)
+            if math.hypot(o.x[k] - tr.x[-1], o.y[k] - tr.y[-1]) >= self.reacq_r:
+                continue
+            older_is_tr = tr.t0 <= o.t0
+            if (older_is_tr and o.t0 >= t_end - self.ghost_s) or (not older_is_tr and t_end - tr.t0 < self.ghost_s):
+                return o, older_is_tr
+        return None, False
+
+    def _join_split(self, old, new):
+        """Doi tuong cu nhan lai quy dao tu phan tach, giu so thu tu va luot vao vung."""
+        k = int(np.searchsorted(new.t, old.t[-1], side="right"))
+        old.t += new.t[k:]; old.x += new.x[k:]; old.y += new.y[k:]
+        old.hits += new.hits; old.size, old.gaps = new.size, new.gaps
+        old.vx, old.vy, old.speed, old.still_since, old.moving, old.v_t0 = new.vx, new.vy, new.speed, new.still_since, new.moving, new.v_t0
+        old.merged, old.absorb_t = max(old.merged, new.merged), new.absorb_t if new.merged else old.absorb_t
+        self._drop_entry(new, old)
+        self.tracks.remove(new)
+        self.events.append(("GOP_TACH", old.id, old.t[-1], old.x[-1], old.y[-1], "#%d là phần tách của #%d" % (new.id, old.id)))
+
+    def _drop_entry(self, ghost, keeper):
+        if ghost.entry is not None:
+            if keeper.entry is None:
+                keeper.entry, keeper.entry["id"] = ghost.entry, keeper.id
+            else:
+                self.entries.remove(ghost.entry)
+            ghost.entry = None
 
     def _pred_dist(self, tr, m):
         dt = max(m[0] - tr.t[-1], 0.0)
@@ -439,6 +498,15 @@ class Tracker:
             if j not in used_m:
                 self.tracks.append(Track(self.next_id, [m[0]], [m[1]], [m[2]], m[3], False, t0=m[0], gaps=[m[6]]))
                 self.next_id += 1
+        for tr in list(self.tracks):                            # truoc khi coi la bien mat: co phai bi tach cum khong
+            if tr in self.tracks and tr.lost_since is None and tr.hits >= self.confirm and now - tr.t[-1] > self.miss_s:
+                o, older_is_tr = self._find_split(tr)
+                if o is not None and older_is_tr:
+                    self._join_split(tr, o)
+                elif o is not None:
+                    self._drop_entry(tr, o)
+                    self.tracks.remove(tr)
+                    self.events.append(("GOP_TACH", o.id, tr.t[-1], tr.x[-1], tr.y[-1], "#%d là phần tách của #%d" % (tr.id, o.id)))
         keep = []
         for tr in self.tracks:
             if now - tr.t[-1] <= self.miss_s:
