@@ -127,6 +127,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tracker, self.tlog, self.elog = detect.Tracker(), None, None
         self.gate = detect.SpeedGate()
         self.area, self.last_logdir, self.last_tag = None, None, ""
+        self.zone_info = None                # dien tich vung cam va phan giam sat duoc
         self.session = None                 # thong so cua phien do dang chay
         self.t_start, self.wall_off, self.entry_view = 0.0, None, []   # wall_off: gio he thong - dong ho nguon (Truc tiep)
         self._save_timer = QtCore.QTimer(self, singleShot=True, interval=500, timeout=self._save_settings)
@@ -297,7 +298,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lb_alarm = QtWidgets.QLabel("CHƯA CÓ VÙNG CẤM"); self.lb_alarm.setAlignment(QtCore.Qt.AlignCenter)
         self.lb_alarm.setMinimumHeight(44); self._set_alarm_style(None)
         f.addRow(self.lb_alarm)
-        bt_ack = QtWidgets.QPushButton("Xác nhận vùng trống"); bt_ack.clicked.connect(self.ack_clear)
+        self.lb_zone = QtWidgets.QLabel("Vùng cấm: chưa có"); self.lb_zone.setWordWrap(True)
+        f.addRow(self.lb_zone)
+        bt_ack =QtWidgets.QPushButton("Xác nhận vùng trống"); bt_ack.clicked.connect(self.ack_clear)
         f.addRow(bt_ack)
         self.cb_beep = QtWidgets.QComboBox(); self.cb_beep.addItems([BEEP_ZONE, BEEP_MOVE, BEEP_OFF])
         self.cb_beep.setCurrentText(self.cfg["beep_mode"])
@@ -375,6 +378,44 @@ class MainWindow(QtWidgets.QMainWindow):
         self._draw_zone()
         self._draw_area()
 
+    def _outline(self):
+        """Duong bao de tinh phan giam sat duoc: uu tien lan Do dien tich gan nhat, roi den nen. Tra ve (goc tho, r) hoac None."""
+        if self.area is not None:
+            return self.area["ang"], self.area["r"]
+        bg = self.det.bg
+        if bg.ready():
+            ang = (np.arange(bg.nb) + 0.5) * bg.bin_deg
+            res = core.measure_area([(ang, bg.bg)] * 10, max_r=self.sp_area_max.value(), bin_deg=bg.bin_deg)
+            if res is not None:
+                return res["ang"], res["r"]
+        return None
+
+    def _refresh_zone_info(self):
+        """Tinh lai khi doi vung, nen hoac duong bao; khong tinh moi nhip vi dung luoi."""
+        z, old = self.det.zone, self.zone_info
+        style = ""
+        if len(z) < 3:
+            self.zone_info, text = None, "Vùng cấm: chưa có"
+        elif detect.polygon_self_intersects(z):
+            self.zone_info, text, style = None, "Vùng cấm có cạnh tự cắt, diện tích không tin được: hãy vẽ lại", "color:#b00020;font-weight:bold"
+        else:
+            a = detect.polygon_area(z)
+            info = dict(dien_tich_m2=round(a, 2))
+            text = "Vùng cấm: %.2f m²" % a
+            out = self._outline()
+            if out is not None:
+                v = min(detect.visible_area(z, out[0], out[1], *self._cal_now()), a)   # luoi 2 cm co the du mot chut
+                pct = 100.0 * v / a if a > 0 else 0.0
+                info.update(giam_sat_m2=round(v, 2), ti_le_pct=round(pct))
+                text += "\nGiám sát được: %.2f m² (%.0f %%)" % (v, pct)
+                if pct < 90:
+                    text += "\nCảnh báo: phần còn lại bị tường hoặc vật chắn che, không phát hiện được vật ở đó"
+                    style = "color:#b00020;font-weight:bold"
+            self.zone_info = info
+        self.lb_zone.setText(text); self.lb_zone.setStyleSheet(style)
+        if self.session and self.src and self.zone_info != old and self.zone_info is not None:
+            self.session.note("vung_cam", self.src.now() - self.t_start, **self.zone_info)
+
     def _area_xy(self):
         off, dr = self._cal_now()
         th = np.radians(dr * self.area["ang"] + off)
@@ -391,6 +432,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.area = None
         self.lb_area.setText("Diện tích: chưa đo")
         self._draw_area()
+        self._refresh_zone_info()
 
     def measure_area(self):
         """Do tu cac vong gan nhat da on dinh toc do. Khong can hoc nen."""
@@ -406,6 +448,7 @@ class MainWindow(QtWidgets.QMainWindow):
                              % (res["area_m2"], res["perim_m"], res["n_revs"], res["gap_deg"], warn))
         self.det.events.append((time.time(), "INFO", "Đo diện tích: %.2f m²" % res["area_m2"]))
         self._save_area(res)
+        self._refresh_zone_info()
 
     def _save_area(self, res):
         d = self.last_logdir or HERE
@@ -472,6 +515,8 @@ class MainWindow(QtWidgets.QMainWindow):
             bg = self.det.bg
             self.session.d["nen_luc_bat_dau"] = dict(co_nen=bg.ready(), vong_s=None if bg.rps is None else round(bg.rps, 3),
                                                      hoc_luc=None if bg.t_learn is None else time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(bg.t_learn)))
+            self._refresh_zone_info()
+            self.session.d["vung_cam_luc_bat_dau"] = self.zone_info
             self.session._write()
             self.lb_ov.show()
         except Exception as e:
@@ -546,6 +591,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 if was_learning and self.det.bg.ready():
                     self.det.bg.rps = 1.0 / sc.period
                     self.session.note("hoc_nen", self.src.now() - self.t_start, so_vong=self.sp_learn.value(), vong_s=round(1.0 / sc.period, 3))
+                    self._refresh_zone_info()
                     if isinstance(self.src, core.LiveSource):
                         self._save_bg(sc)               # phat lai khong ghi de nen cua phan cung
                 self.alog.on_scan(sc, objs, newly, self.det, t_ready, self.src.now())
@@ -825,9 +871,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.zone_item.setData(xs, ys)
         else:
             self.zone_item.setData([], [])
+        self._refresh_zone_info()
 
     def learn_bg(self):
         self.det.bg.start_learning(self.sp_learn.value())
+        self._refresh_zone_info()
 
     def _save_bg(self, sc):
         try:
@@ -855,8 +903,9 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.det.events.append((time.time(), "INFO", "Đã nạp nền học lúc %s, chỉ đúng nếu LiDAR chưa bị dời"
                                 % time.strftime("%H:%M %d/%m", time.localtime(data["t"]))))
+        self._refresh_zone_info()
         if self.session:
-            self.session.note("nap_nen", self.src.now() - self.t_start, hoc_luc=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(data["t"])),
+            self.session.note("nap_nen",self.src.now() - self.t_start, hoc_luc=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(data["t"])),
                               vong_s=round(data["rps"], 3))
 
     def _apply_detect_params(self, *_):

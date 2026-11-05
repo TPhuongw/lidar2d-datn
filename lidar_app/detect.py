@@ -63,6 +63,37 @@ def poly_edge_dist(x, y, poly):
     return best
 
 
+def polygon_area(poly):
+    """Dien tich da giac (cong thuc Gauss), m2. Chi dung voi da giac khong tu cat."""
+    return 0.5 * abs(sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(poly, list(poly[1:]) + [poly[0]])))
+
+
+def polygon_self_intersects(poly):
+    """True neu hai canh khong ke nhau cat nhau."""
+    side = lambda u, v, w: (v[0] - u[0]) * (w[1] - u[1]) - (v[1] - u[1]) * (w[0] - u[0])
+    n = len(poly)
+    for i in range(n):
+        a, b = poly[i], poly[(i + 1) % n]
+        for j in range(i + 2, n):
+            if i == 0 and j == n - 1:                   # hai canh chung dinh dau
+                continue
+            p, q = poly[j], poly[(j + 1) % n]
+            if side(a, b, p) * side(a, b, q) < 0 and side(p, q, a) * side(p, q, b) < 0:
+                return True
+    return False
+
+
+def visible_area(poly, ang_deg, r, off_deg, direction, step=0.02):
+    """Phan da giac LiDAR nhin thay duoc: diem gan hon duong bao (ang_deg, r) theo huong cua no. Tinh bang luoi step (m), m2."""
+    xs, ys = zip(*poly)
+    gx, gy = np.meshgrid(np.arange(min(xs) + step / 2, max(xs), step), np.arange(min(ys) + step / 2, max(ys), step))
+    gx, gy = gx.ravel(), gy.ravel()
+    k = point_in_polygon(gx, gy, poly)
+    gx, gy = gx[k], gy[k]
+    raw = direction * (np.degrees(np.arctan2(gy, gx)) - off_deg) % 360.0
+    return float(np.sum(np.hypot(gx, gy) < np.interp(raw, ang_deg, r, period=360.0))) * step * step
+
+
 def transform_zone(zone, off_old, dir_old, off_new, dir_new):
     """Doi dinh vung cam khi doi Xoay / Dao chieu de vung van o dung vi tri that so voi LiDAR.
     Xoay va lat giu nguyen duong thang nen chi can doi cac dinh. r0 khong lam vung thay doi."""

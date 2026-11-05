@@ -59,6 +59,11 @@ Kết quả ghi vào `dien_tich.csv`, `duong_bao_<giờ>.csv` trong thư mục l
 
 Đây là **diện tích nhìn thấy được từ vị trí LiDAR, ở độ cao mặt quét**, không phải diện tích sàn: đồ đạc làm số nhỏ đi, phần khuất không đo được, người đứng yên hơn nửa số vòng được tính như vật cản. Hướng bị bỏ được nội suy nên chỗ cửa mở hoặc kính lớn có thể sai; app cảnh báo khi nội suy từ 10° trở lên. Chưa đối chiếu với phép đo thật.
 
+## Diện tích vùng cấm
+Dưới ô báo động, app hiện diện tích vùng cấm, tính từ các đỉnh đã vẽ (không phải phép đo bằng LiDAR). Khi đã có nền hoặc đã bấm **Đo diện tích**, app hiện thêm phần **giám sát được**: phần vùng nằm trước đường bao LiDAR nhìn thấy, tính bằng lưới 2 cm, ưu tiên lần đo diện tích gần nhất rồi đến nền. Dưới 90 % thì có cảnh báo, vì vật ở phần còn lại không phát hiện được. Vùng có cạnh tự cắt thì app yêu cầu vẽ lại. Hai số này ghi vào `session.json` (`vung_cam_luc_bat_dau` và các sự kiện `vung_cam`).
+
+Phần giám sát được chỉ tính ở độ cao mặt quét, và phụ thuộc vào lúc lấy đường bao: người hoặc đồ đạc lúc đó sẽ làm số thay đổi. Vật thấp hơn mặt quét vẫn không thấy dù tỉ lệ là 100 %.
+
 ## Log mốc thời gian báo động
 Mỗi lần chạy Trực tiếp, app ghi `alarm.csv` vào thư mục log; phát lại thì ghi `alarm_replay.csv`. Mỗi lần báo động là một dòng `BAO_DONG`, mỗi lần hết báo động là một dòng `HET`. Các mốc `t_*` dùng chung đồng hồ với `t_pc` trong `tf03_raw.csv`.
 
