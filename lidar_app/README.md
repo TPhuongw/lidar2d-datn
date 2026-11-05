@@ -49,6 +49,16 @@ Mỗi lần bấm **Bắt đầu**, app ghi `session.json` vào thư mục log (
 
 `tf03_raw.csv` được đẩy xuống ổ đĩa khoảng mỗi giây, `index.csv` sau mỗi mốc. App chết hoặc bị tắt ngang chỉ mất khoảng 1 s dữ liệu thô cuối. Mất điện đột ngột có thể mất nhiều hơn vì hệ điều hành còn giữ đệm.
 
+## Đo diện tích
+Bấm **Đo diện tích** khi đang chạy hoặc sau khi dừng. App lấy tối đa 20 vòng gần nhất đã ổn định tốc độ (cần ít nhất 10), không cần học nền, rồi:
+1. Lấy trung vị theo vòng để bỏ người đi qua, trung vị theo góc (5 ô, 2,5°) để bỏ tia lẻ.
+2. Bỏ hướng xa hơn *Đo: bỏ hướng xa hơn* (mặc định 8 m), nội suy từ hai bên. Nên đặt ngưỡng lớn hơn đường chéo phòng một chút.
+3. Tính diện tích = ½ Σ r²·Δθ và chu vi đường bao, vẽ đường bao nét đứt lên bản đồ.
+
+Kết quả ghi vào `dien_tich.csv`, `duong_bao_<giờ>.csv` trong thư mục log (phát lại: thêm `_replay`) và `session.json`.
+
+Đây là **diện tích nhìn thấy được từ vị trí LiDAR, ở độ cao mặt quét**, không phải diện tích sàn: đồ đạc làm số nhỏ đi, phần khuất không đo được, người đứng yên hơn nửa số vòng được tính như vật cản. Hướng bị bỏ được nội suy nên chỗ cửa mở hoặc kính lớn có thể sai; app cảnh báo khi nội suy từ 10° trở lên. Chưa đối chiếu với phép đo thật.
+
 ## Log mốc thời gian báo động
 Mỗi lần chạy Trực tiếp, app ghi `alarm.csv` vào thư mục log; phát lại thì ghi `alarm_replay.csv`. Mỗi lần báo động là một dòng `BAO_DONG`, mỗi lần hết báo động là một dòng `HET`. Các mốc `t_*` dùng chung đồng hồ với `t_pc` trong `tf03_raw.csv`.
 

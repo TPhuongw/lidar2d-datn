@@ -29,7 +29,7 @@ BG_FILE = os.path.join(HERE, "nen.npz")
 BEEP_ZONE, BEEP_MOVE, BEEP_OFF = "Có vật trong vùng", "Có vật đang đi", "Tắt"
 DEFAULTS = dict(tf_port="COM12", uno_port="COM10", tf_baud=115200, tf_hz=1000, rps=1.0, r0=0.0, offset=0.0, dir=1, maxcm=3000, minstr=0,
                 accum=1, color="cường độ", view=5.0, zone=[], margin=0.15, min_size=0.10, on_revs=3,
-                learn_revs=20, replay_dir="", replay_speed=1.0, lock_cal=False, merge_d=0.6, merge_dv=0.25, hold_s=60.0, beep_mode="Có vật trong vùng")
+                learn_revs=20, replay_dir="", replay_speed=1.0, lock_cal=False, merge_d=0.6, merge_dv=0.25, hold_s=60.0, beep_mode="Có vật trong vùng", area_max=8.0)
 
 
 class BeepPlayer:
@@ -126,6 +126,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.alog = None                    # log moc thoi gian bao dong
         self.tracker, self.tlog, self.elog = detect.Tracker(), None, None
         self.gate = detect.SpeedGate()
+        self.area, self.last_logdir, self.last_tag = None, None, ""
         self.session = None                 # thong so cua phien do dang chay
         self.t_start, self.wall_off, self.entry_view = 0.0, None, []   # wall_off: gio he thong - dong ho nguon (Truc tiep)
         self._save_timer = QtCore.QTimer(self, singleShot=True, interval=500, timeout=self._save_settings)
@@ -156,7 +157,8 @@ class MainWindow(QtWidgets.QMainWindow):
         origin = pg.ScatterPlotItem([0], [0], symbol="+", size=18, pen=pg.mkPen("r", width=2))
         self.sel_mark = pg.ScatterPlotItem(symbol="x", size=18, pen=pg.mkPen((120, 0, 160), width=3), brush=pg.mkBrush(120, 0, 160))
         self.sel_text = pg.TextItem("", color=(120, 0, 160), anchor=(0, 1))     # diem cuoi cua dong dang chon trong bang
-        for it in (self.zone_item, self.sc, self.sc_fg, self.draft_item, origin, self.sel_mark, self.sel_text):
+        self.area_item = pg.PlotDataItem(pen=pg.mkPen((0, 140, 140), width=2, style=QtCore.Qt.DashLine))   # duong bao do dien tich
+        for it in (self.zone_item, self.area_item, self.sc, self.sc_fg, self.draft_item, origin, self.sel_mark, self.sel_text):
             self.plot.addItem(it)
         self.plot.scene().sigMouseClicked.connect(self.on_click)
         self.lb_ov = QtWidgets.QLabel(self.plot)        # thoi gian va so doi tuong, nam tren ban do
@@ -256,6 +258,14 @@ class MainWindow(QtWidgets.QMainWindow):
         b1 = QtWidgets.QPushButton("Lưu ảnh"); b1.clicked.connect(self.save_png)
         b2 = QtWidgets.QPushButton("Lưu CSV vòng này"); b2.clicked.connect(self.save_csv)
         h.addWidget(b1); h.addWidget(b2); f.addRow(h)
+        self.sp_area_max = dspin(1, 30, 0.5, self.cfg["area_max"], 1)
+        f.addRow("Đo: bỏ hướng xa hơn (m)", self.sp_area_max)
+        h = QtWidgets.QHBoxLayout()
+        bt_area = QtWidgets.QPushButton("Đo diện tích"); bt_area.clicked.connect(self.measure_area)
+        bt_area_clr = QtWidgets.QPushButton("Xóa đường bao"); bt_area_clr.clicked.connect(self.clear_area)
+        h.addWidget(bt_area); h.addWidget(bt_area_clr); f.addRow(h)
+        self.lb_area = QtWidgets.QLabel("Diện tích: chưa đo"); self.lb_area.setWordWrap(True)
+        f.addRow(self.lb_area)
         lay.addWidget(g)
 
         # --- giam sat
@@ -363,6 +373,59 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tracker.reset(keep_entries=True)           # toa do cu khong con noi tiep voi toa do moi
         self._drain_entries()
         self._draw_zone()
+        self._draw_area()
+
+    def _area_xy(self):
+        off, dr = self._cal_now()
+        th = np.radians(dr * self.area["ang"] + off)
+        return self.area["r"] * np.cos(th), self.area["r"] * np.sin(th)
+
+    def _draw_area(self):
+        if self.area is None:
+            self.area_item.setData([], [])
+            return
+        x, y = self._area_xy()
+        self.area_item.setData(np.r_[x, x[0]], np.r_[y, y[0]])
+
+    def clear_area(self):
+        self.area = None
+        self.lb_area.setText("Diện tích: chưa đo")
+        self._draw_area()
+
+    def measure_area(self):
+        """Do tu cac vong gan nhat da on dinh toc do. Khong can hoc nen."""
+        revs = [(v["ang"], v["r"]) for _, v in self.recent if v.get("stable", True)]
+        res = core.measure_area(revs, max_r=self.sp_area_max.value())
+        if res is None:
+            self.lb_area.setText("Diện tích: cần ít nhất 10 vòng ổn định, hiện có %d" % len(revs))
+            return
+        self.area = res
+        self._draw_area()
+        warn = "\nCảnh báo: %.0f° không đo được, đã nội suy" % res["gap_deg"] if res["gap_deg"] >= 10 else ""
+        self.lb_area.setText("Diện tích nhìn thấy: %.2f m²\nChu vi đường bao: %.2f m\n%d vòng, nội suy %.1f°%s"
+                             % (res["area_m2"], res["perim_m"], res["n_revs"], res["gap_deg"], warn))
+        self.det.events.append((time.time(), "INFO", "Đo diện tích: %.2f m²" % res["area_m2"]))
+        self._save_area(res)
+
+    def _save_area(self, res):
+        d = self.last_logdir or HERE
+        tag = self.last_tag                             # van dung sau khi bam Dung
+        stamp =time.strftime("%H%M%S")
+        off, dr = self._cal_now()
+        try:
+            x, y = self._area_xy()
+            np.savetxt(os.path.join(d, "duong_bao%s_%s.csv" % (tag, stamp)), np.c_[res["ang"], res["r"], x, y], delimiter=",",
+                       header="angle_deg,r_m,x_m,y_m", comments="", fmt="%.4f")
+            fn = os.path.join(d, "dien_tich%s.csv" % tag)
+            new = not os.path.exists(fn)
+            with open(fn, "a", encoding="utf-8") as f:
+                f.write(("gio,dien_tich_m2,chu_vi_m,so_vong,noi_suy_do,bo_xa_hon_m,r0,xoay,chieu\n" if new else "") + "%s,%.3f,%.3f,%d,%.1f,%.1f,%.3f,%.1f,%d\n" % (
+                    time.strftime("%H:%M:%S"), res["area_m2"], res["perim_m"], res["n_revs"], res["gap_deg"], res["max_r"], self.sp_r0.value(), off, dr))
+            if self.session:
+                self.session.note("do_dien_tich", self.src.now() - self.t_start, dien_tich_m2=round(res["area_m2"], 3), chu_vi_m=round(res["perim_m"], 3),
+                                  so_vong=res["n_revs"], noi_suy_do=res["gap_deg"], bo_xa_hon_m=res["max_r"])
+        except Exception as e:
+            self.det.events.append((time.time(), "INFO", "Không ghi được kết quả đo: %s" % e))
 
     def _fill_ports(self):
         ports = list_ports()
@@ -398,6 +461,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tlog = detect.TrackLog(os.path.join(self.src.logdir, name.replace("alarm", "tracks")))
             self.elog = detect.EntryLog(os.path.join(self.src.logdir, name.replace("alarm", "luot_vao")))
             self.tracker.reset(); self.gate.reset()
+            self.last_logdir, self.last_tag = self.src.logdir, "_replay" if isinstance(self.src, core.ReplaySource) else ""
             self.t_start = self.src.now()
             self.wall_off = None if isinstance(self.src, core.ReplaySource) else time.time() - self.src.now()
             self.sel_mark.setData([], []); self.sel_text.setText(""); self._update_entries()
@@ -490,7 +554,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._drain_entries()
             else:                                       # dong co chua on dinh: goc sai, chi hien ban do
                 objs, fg, newly = [], np.zeros(len(xy["x"]), bool), False
-            xy["fg"], xy["objs"] = fg, objs
+            xy["fg"], xy["objs"], xy["stable"] = fg, objs, self.gate.ok
             self.last_scan = sc
             self.recent.append((sc, xy))
             self.recent = self.recent[-20:]
@@ -516,7 +580,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _redraw_recent(self, *_):
         p = self._xy_params()
-        self.recent = [(sc, dict(core.to_xy(sc, **p), fg=np.zeros(0, bool), objs=[])) for sc, _ in self.recent]
+        self.recent = [(sc, dict(core.to_xy(sc, **p), fg=np.zeros(0, bool), objs=[], stable=v.get("stable", True))) for sc, v in self.recent]
         self._draw()
 
     def _draw(self):
@@ -842,7 +906,7 @@ class MainWindow(QtWidgets.QMainWindow):
                         min_size=self.sp_size.value(), on_revs=self.sp_on.value(), learn_revs=self.sp_learn.value(),
                         replay_dir=self.le_dir.text(), replay_speed=float(self.cb_speed.currentText()),
                         lock_cal=self.ck_lock.isChecked(), merge_d=self.sp_mg_d.value(), merge_dv=self.sp_mg_dv.value(),
-                        hold_s=self.sp_hold.value(), beep_mode=self.cb_beep.currentText())
+                        hold_s=self.sp_hold.value(), beep_mode=self.cb_beep.currentText(), area_max=self.sp_area_max.value())
 
     def _save_settings(self):
         old = dict(self.cfg)

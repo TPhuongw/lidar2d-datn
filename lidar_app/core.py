@@ -244,6 +244,39 @@ def to_xy(scan, r0=0.0, offset_deg=0.0, direction=1, max_cm=3000, min_str=0):
     return dict(x=r * np.cos(th), y=r * np.sin(th), r=r, ang=a[ok], s=s[ok], ok=ok)
 
 
+def measure_area(revs, max_r=8.0, bin_deg=0.5, med_bins=5, min_revs=10):
+    """Dien tich nhin thay duoc tu vi tri LiDAR, o do cao mat quet. Khong phai dien tich san.
+    revs: list[(goc tho, r)] moi vong. Trung vi theo vong de bo nguoi di qua, trung vi theo goc de bo tia le,
+    bo huong xa hon max_r (cua kinh, cua mo) roi noi suy tu hai ben. Dien tich = 1/2 * tong r^2 * dtheta.
+    Tra ve dict, hoac None neu chua du min_revs vong."""
+    if len(revs) < min_revs:
+        return None
+    nb = int(round(360 / bin_deg))
+    arr = np.full((len(revs), nb), np.nan)
+    for i, (ang, r) in enumerate(revs):
+        ang, r = np.asarray(ang), np.asarray(r)
+        o = np.argsort(r)[::-1]                        # nhieu diem cung o: giu diem gan nhat
+        arr[i, (ang[o] / bin_deg).astype(int) % nb] = r[o]
+    with np.errstate(all="ignore"):
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            med = np.nanmedian(arr, axis=0)
+            half = med_bins // 2
+            filt = np.nanmedian(np.array([np.roll(med, k) for k in range(-half, half + 1)]), axis=0)
+    bad =~np.isfinite(filt) | (filt > max_r) | (filt <= 0)
+    if bad.all():
+        return None
+    th = (np.arange(nb) + 0.5) * bin_deg
+    r = np.interp(th, th[~bad], filt[~bad], period=360.0)   # huong khong dung duoc: noi suy tu hai ben
+    dth = math.radians(bin_deg)
+    area = 0.5 * float(np.sum(r ** 2)) * dth
+    t = np.radians(th)
+    x, y = r * np.cos(t), r * np.sin(t)
+    perim = float(np.sum(np.hypot(np.diff(np.r_[x, x[0]]), np.diff(np.r_[y, y[0]]))))
+    return dict(area_m2=area, perim_m=perim, ang=th, r=r, n_revs=len(revs), gap_deg=float(bad.sum()) * bin_deg, max_r=max_r)
+
+
 # ------------------------------------------------------------------ thong so phien do
 class SessionLog:
     """Ghi thong so cua mot phien do vao JSON, kem moi thay doi trong luc chay. t tinh tu luc bat dau (s)."""
