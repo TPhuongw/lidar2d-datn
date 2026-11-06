@@ -71,20 +71,15 @@ aside>*{flex-shrink:0}
 
 <div class="app">
   <div class="stage">
-    <canvas id="c" aria-label="Mô hình 3D thiết bị LiDAR + camera, kéo để xoay"></canvas>
+    <canvas id="c" aria-label="Mô hình 3D khối LiDAR 2D, kéo để xoay"></canvas>
     <div class="load" id="load">Đang tải mô hình…</div>
     <div class="hud" id="hud">kéo: xoay · cuộn: thu phóng · chuột phải: dời · bấm vào chi tiết để xem</div>
   </div>
   <aside>
     <div>
-      <div class="eyebrow">Mô hình ý tưởng · 2 phương án</div>
-      <h1>LiDAR 2D + camera cho đường ngang</h1>
+      <div class="eyebrow">Mô hình ý tưởng · khối LiDAR</div>
+      <h1>LiDAR 2D quét 360° từ TF03</h1>
       <p class="sub" id="sub"></p>
-    </div>
-
-    <div class="seg" role="radiogroup" aria-label="Phương án">
-      <button type="button" role="radio" data-v="v3" aria-checked="true"><b>Quét 360°</b><span>đỉnh cột · động cơ trục rỗng</span></button>
-      <button type="button" role="radio" data-v="v2" aria-checked="false"><b>Bản dùng đai</b><span>hông cột · BLDC + đai GT2</span></button>
     </div>
 
     <section class="ctl" aria-label="Điều khiển">
@@ -95,8 +90,8 @@ aside>*{flex-shrink:0}
       </div>
       <div class="row"><label for="cut">Cắt đôi để nhìn bên trong</label><input id="cut" type="checkbox"></div>
       <div class="row"><label for="scan">Mặt quét laser (minh họa)</label><input id="scan" type="checkbox" checked></div>
+      <div class="row"><label for="blind">Vùng mù do gân dây</label><input id="blind" type="checkbox" checked></div>
       <div class="row"><label for="spin">Gương quay</label><input id="spin" type="checkbox" checked></div>
-      <div class="row"><label for="pole">Cột lắp đặt</label><input id="pole" type="checkbox" checked></div>
       <div class="btns"><button id="reset" type="button">Góc nhìn ban đầu</button><button id="clear" type="button">Bỏ chọn</button></div>
     </section>
 
@@ -124,59 +119,34 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 
-// ---- khoi dung chung ----
-const BASE = {
-  nap:   {t:"Nắp trên", sw:"#8c949e", ex:[0,0,250], d:"Nắp thụ động, không có điện, có vành che nắng. Được ống cửa sổ đỡ quanh toàn chu vi.", dl:[["Đường kính","Ø150 mm"],["Cao","22 mm"]]},
-  cua_so:{t:"Ống cửa sổ", sw:"#9cc4ef", ex:[0,0,165], d:"Ống trong suốt (PC hoặc acrylic) cho tia quét đi qua và đỡ nắp. Không có cột hay dây nào cắt ngang mặt quét.", dl:[["Kích thước","Ø140 × 3 × 75 mm"],["Cần đo","độ truyền qua ở 905 nm"]]},
-  camera:{t:"Camera", sw:"#e9e9e4", ex:[160,0,0], d:"Camera đặt ở mặt trước, thấp hơn mặt quét nên không che tia. Cúi 10°, có mái che. Một camera chỉ nhìn một hướng.", dl:[["Hộp","70 × 50 × 48 mm"],["Cao độ","z ≈ 95 mm"]]},
-};
-const V = {
-  v3: {
-    file:"san_pham_v3.glb.b64.txt",
-    sub:"Gắn trên đỉnh cột, TF03 ở đế chiếu lên, động cơ trục rỗng quay thẳng gương. Không vật nào cắt ngang mặt quét. Thân Ø150 mm, cao 245 mm, mặt quét ở 185 mm. Kích thước tự đặt, chưa phải bản vẽ chế tạo.",
-    map:{"vo_de":"vo","dem_cao_su_cap":"vo","tam_do":"co_khi","tru_do_45":"co_khi","tru_do_135":"co_khi","tru_do_225":"co_khi","tru_do_315":"co_khi","pcb_chinh":"pcb","stm32":"pcb","w5500_ethernet":"pcb","switch_ethernet_ic":"pcb","rj45_ra_ngoai":"pcb","rj45_camera":"pcb","cau_dau_24v":"pcb","cau_chi":"pcb","buck_ic":"pcb","cuon_cam_buck":"pcb","driver_foc":"pcb","jst_dong_co":"pcb","jst_encoder":"pcb","jst_tf03":"pcb","swd":"pcb","relay_1":"pcb","relay_2":"pcb","relay_3":"pcb","relay_4":"pcb","cau_dau_relay":"pcb","tu_0":"pcb","tu_1":"pcb","tu_2":"pcb","led_0":"pcb","led_1":"pcb","led_2":"pcb","tf03":"tf03","thau_kinh_0":"tf03","thau_kinh_1":"tf03","gia_tf03_-1":"tf03","gia_tf03_1":"tf03","dong_co_truc_rong":"truyen_dong","dau_doc_encoder":"truyen_dong","phan_quay":"phan_quay","vong_nam_cham_encoder":"phan_quay","guong_45":"phan_quay","ong_cua_so":"cua_so","nap_tren":"nap","camera":"camera","ong_kinh_camera":"camera","gia_camera":"camera","cot_lap_dat":"ga_cot","mat_bich":"ga_cot","ong_ap_cot":"ga_cot","bulong_45":"ga_cot","bulong_135":"ga_cot","bulong_225":"ga_cot","bulong_315":"ga_cot","gan_0":"ga_cot","gan_90":"ga_cot","gan_180":"ga_cot","gan_270":"ga_cot"},
-    rot:["phan_quay","guong_45","vong_nam_cham_encoder"],
-    view:{target:[0,40,0], pos:[700,420,900]},
-    G:{
-      phan_quay:{t:"Phần quay + gương 45°", sw:"#c3c6cb", ex:[0,0,95], d:"Mặt bích bắt thẳng lên rotor động cơ, ống rỗng Ø36 cho tia đi lên, khối nêm mang gương elip 45°. Vòng nam châm encoder và đối trọng nằm dưới đường tia ra.", dl:[["Gương","elip 62 × 44 mm"],["Tâm gương","z = 185 mm"],["Tỉ lệ","góc tia = góc gương (1:1)"]]},
-      truyen_dong:{t:"Động cơ trục rỗng + encoder", sw:"#2b2d31", ex:[0,0,40], d:"Động cơ BLDC trục rỗng ôm quanh đường tia, quay thẳng phần quay: không đai, không puly, không ổ bi riêng. Đầu đọc cố định đọc vòng nam châm trên rotor nên biết trực tiếp góc gương.", dl:[["Động cơ","Ø86 × 18 mm, lỗ Ø46 (giả định)"],["Truyền động","trực tiếp 1:1"],["Encoder","vòng từ + đầu đọc"]]},
-      co_khi:{t:"Tấm đỡ", sw:"#bfc2c7", ex:[0,0,0], d:"Tấm nhôm giữ động cơ, đứng trên 4 trụ. TF03 treo ngay bên dưới.", dl:[["Cao độ","z = 128 mm"],["Lỗ giữa","Ø46 mm"]]},
-      tf03:{t:"TF03 chiếu lên", sw:"#202024", ex:[0,0,-80], d:"TF03 treo dưới tấm đỡ, hai thấu kính hướng lên, chiếu thẳng qua lỗ động cơ và ống quay lên gương.", dl:[["Khối","44 × 31.8 × 42.9 mm (giả định)"],["Mặt kính","z = 118 mm"],["Kính → gương","67 mm"]]},
-      pcb:{t:"Bo mạch chính", sw:"#11663a", ex:[0,0,-190], d:"Bo tròn Ø138 mm có lỗ giữa cho cáp đi lên từ lòng cột: STM32, Ethernet W5500, switch Ethernet 3 cổng (LiDAR + camera + cáp ra), driver FOC, buck 24→5 V, 4 relay báo động ra cầu đấu.", dl:[["Vào","24 V + Ethernet trong lòng cột"],["Ra","4 tiếp điểm relay"],["Nối","JST: TF03, động cơ, encoder; SWD"]]},
-      vo:{t:"Vỏ đế", sw:"#8d949c", ex:[0,0,-330], d:"Vỏ nhôm kín. Cáp đi lên từ lòng cột qua lỗ Ø30 ở giữa đáy, có đệm cao su.", dl:[["Kích thước","Ø150 × 150 mm"],["Mục tiêu","IP65"]]},
-      ga_cot:{t:"Gá đỉnh cột", sw:"#5a6068", ex:[0,0,-470], d:"Mặt bích Ø150 mm bắt 4 bu lông vào đáy đế, ống áp ôm đầu cột Ø76 mm, 4 gân tăng cứng. Quanh mặt quét không còn gì che.", dl:[["Cột","Ø76 mm"],["Mặt bích","Ø150 × 8 mm"]]},
-      ...BASE},
-    notes:[
-      "<b>Đủ 360°:</b> gắn trên đỉnh cột thay vì bên hông, TF03 ở đế chiếu lên, nên không có cột hay dây nào cắt ngang mặt quét.",
-      "<b>Truyền thẳng:</b> động cơ trục rỗng ôm quanh đường tia và quay gương 1:1. Encoder vòng đọc thẳng góc gương, giống nguyên lý “góc = số bước” đang dùng.",
-      "<b>Một đường cáp</b> 24 V + Ethernet đi trong lòng cột; switch trên bo chia cho LiDAR và camera.",
-      "<span class=\"tag\">chưa kiểm chứng</span> nguồn hàng động cơ trục rỗng lỗ ≥ 46 mm, độ truyền qua 905 nm và phản xạ ngược của ống cửa sổ, tản nhiệt trong vỏ kín, cân bằng phần quay.",
-      "Một camera chỉ nhìn một hướng; muốn có hình ảnh 360° cần 2–4 camera."]
+// ---- du lieu mo hinh (lidar_v4.py) ----
+const BLIND_DEG = 17.4;   // 2*atan((4 + 15)/2 / 62): gan 4 mm, chum 15 mm (gia dinh), ban kinh 62 mm
+const LENS_Z = 205;      // mat kinh TF03
+const V = { v4: {
+  file:"lidar_v4.glb.b64.txt",
+  sub:"TF03 ở trên chiếu xuống, gương 45° quay thẳng trên trục động cơ ở dưới. Đế chứa bo mạch, động cơ, đầu nối nguồn và mạng. Thân Ø150 mm, cao 265 mm, mặt quét ở 145 mm. Kích thước tự đặt, chưa phải bản vẽ chế tạo.",
+  map:{"vo_de":"vo","tam_gan_day":"vo","m12_nguon_24v":"ket_noi","m12_nguon_24v_vach":"ket_noi","m12_ethernet":"ket_noi","m12_ethernet_vach":"ket_noi","van_tho":"ket_noi","pcb_chinh":"pcb","stm32f4":"pcb","thach_anh":"pcb","w5500_ethernet":"pcb","bien_ap_ethernet":"pcb","drv_foc":"pcb","mosfet_1":"pcb","mosfet_2":"pcb","mosfet_3":"pcb","buck_5v_ic":"pcb","cuon_cam_5v":"pcb","ldo_3v3":"pcb","cau_chi_24v":"pcb","tvs_24v":"pcb","diode_nguoc_cuc":"pcb","cau_dau_24v":"pcb","jst_tf03_4p":"pcb","jst_dongco_3p":"pcb","jst_encoder_6p":"pcb","jst_ethernet":"pcb","swd":"pcb","relay_1":"pcb","relay_2":"pcb","relay_3":"pcb","cau_dau_relay":"pcb","tu_0":"pcb","tu_1":"pcb","tu_2":"pcb","tu_3":"pcb","led_0":"pcb","led_1":"pcb","led_2":"pcb","tam_do_dong_co":"dong_co","tru_do_0":"dong_co","tru_do_1":"dong_co","tru_do_2":"dong_co","tru_do_3":"dong_co","stator_de":"dong_co","rotor_dong_co":"dong_co","nam_cham_truc":"dong_co","encoder_as5048a":"dong_co","chip_as5048a":"dong_co","tru_enc_0":"dong_co","tru_enc_1":"dong_co","tru_enc_2":"dong_co","coc_guong":"phan_quay","guong_45":"phan_quay","ong_cua_so":"cua_so","gan_luon_day":"cua_so","nap":"nap","tam_day_nap":"nap","tf03":"tf03","thau_kinh_0":"tf03","thau_kinh_1":"tf03","gia_tf03_-1":"tf03","gia_tf03_1":"tf03","day_tf03_0":"day_dien","day_tf03_1":"day_dien","day_tf03_2":"day_dien","day_tf03_3":"day_dien","day_dong_co_0":"day_dien","day_dong_co_1":"day_dien","day_dong_co_2":"day_dien","day_encoder_0":"day_dien","day_encoder_1":"day_dien","day_encoder_2":"day_dien","day_encoder_3":"day_dien","day_encoder_4":"day_dien","day_encoder_5":"day_dien","day_nguon_24v_0":"day_dien","day_nguon_24v_1":"day_dien","day_ethernet_0":"day_dien","day_ethernet_1":"day_dien","day_ethernet_2":"day_dien","day_ethernet_3":"day_dien"},
+  rot:["coc_guong","guong_45","rotor_dong_co","nam_cham_truc"],
+  view:{target:[0,120,0], pos:[560,380,700]},
+  G:{
+    nap:{t:"Nắp", sw:"#8f969f", ex:[0,0,230], d:"Vỏ nhôm chứa TF03. Tấm đáy nắp có lỗ Ø40 cho tia đi xuống gương; vành che nắng che mép trên ống cửa sổ.", dl:[["Kích thước","Ø150 × 75 mm"],["Tấm đáy","lỗ Ø40 + khe cho gân dây"]]},
+    tf03:{t:"TF03 chiếu xuống", sw:"#202024", ex:[0,0,170], d:"TF03 treo dưới nắp bằng hai tấm nhôm, hai thấu kính hướng xuống, cách tâm gương 60 mm.", dl:[["Khối","44 × 31.8 × 42.9 mm (giả định)"],["Mặt kính","z = 205 mm"],["Dây","đỏ VCC · đen GND · nâu TX · xanh dương RX"]]},
+    cua_so:{t:"Ống cửa sổ + gân luồn dây", sw:"#9cc4ef", ex:[0,0,110], d:"Ống trong suốt cho tia quét đi qua. Gân mỏng phía sau (4 mm theo phương tiếp tuyến) chứa 4 dây TF03 đi xuống đế; gân này cắt mặt quét nên tạo một cung mù.", dl:[["Ống","Ø140 × 3 × 70 mm"],["Gân","4 × 10 mm, tại x = −62 mm"],["Vùng mù","≈ 17.4° (chùm 15 mm, giả định)"]]},
+    phan_quay:{t:"Cốc gương 45°", sw:"#c3c6cb", ex:[0,0,60], d:"Cốc nhôm bắt thẳng lên rotor động cơ, mang gương elip 45°. Tia từ TF03 đi xuống, gặp gương, ra nằm ngang và quay cùng gương (tỉ lệ 1:1).", dl:[["Gương","elip 62 × 44 mm"],["Tâm gương","z = 145 mm"]]},
+    dong_co:{t:"Động cơ + encoder", sw:"#2b2d31", ex:[0,0,0], d:"BLDC dẹt Ø40 × 18 mm truyền thẳng vào cốc gương. Nam châm ở đầu dưới trục, chip AS5048A ngay bên dưới đọc góc tuyệt đối. Tấm đỡ nhôm đứng trên 4 trụ. Bản đồ án dùng động cơ bước NEMA17 cũng vừa đế Ø150.", dl:[["Động cơ","Ø40 × 18 mm, dạng gimbal"],["Encoder","AS5048A, 14 bit (theo datasheet)"],["Tấm đỡ","z = 88 mm"]]},
+    day_dien:{t:"Dây nối", sw:"#d9412e", ex:[-230,0,30], d:"TF03: 4 dây qua gân xuống JST 4 chân. Động cơ: 3 pha. Encoder: 6 sợi. Nguồn 24 V: đỏ/đen từ đầu M12 tới cầu đấu. Ethernet: 4 sợi từ đầu M12 tới JST.", dl:[["TF03","4 dây, ~170 mm"],["Nguồn","2 dây, tiết diện lớn hơn"],["Mạng","4 sợi (100BASE-TX)"]]},
+    pcb:{t:"Bo mạch chính", sw:"#11663a", ex:[0,0,-110], d:"Bo tròn Ø138 mm. Nguồn: 24 V → cầu chì, diode chống ngược cực, TVS → buck 5 V (TF03) → LDO 3,3 V (STM32). STM32F4 + thạch anh; W5500 + biến áp Ethernet; driver FOC + 3 MOSFET; 3 relay báo động ra cầu đấu; SWD; LED trạng thái.", dl:[["Vào","24 V, Ethernet"],["Ra","5 V cho TF03, 3 pha động cơ, 3 relay"],["Đầu nối","JST: TF03 4p, động cơ 3p, encoder 6p, mạng"]]},
+    ket_noi:{t:"Nguồn & kết nối", sw:"#c8cbd0", ex:[-120,0,-200], d:"Mặt sau đế: đầu M12 nguồn 24 V (vạch đỏ), đầu M12 Ethernet (vạch xanh), van thở chống đọng sương. Nguồn 24 V cấp từ adapter hoặc tủ điện bên ngoài.", dl:[["Nguồn","24 V DC, M12"],["Mạng","Ethernet, M12"],["Mục tiêu","IP65"]]},
+    vo:{t:"Vỏ đế + tấm gắn", sw:"#8d949c", ex:[0,0,-200], d:"Vỏ nhôm kín Ø150 × 110 mm. Tấm gắn đáy 190 × 120 mm, 4 lỗ M8 để bắt lên giá hoặc đỉnh cột.", dl:[["Vỏ","Ø150 × 110 mm"],["Tấm gắn","190 × 120 × 6 mm"]]}
   },
-  v2: {
-    file:"san_pham_v2.glb.b64.txt",
-    sub:"Gắn bên hông cột, TF03 ở đế chiếu lên, BLDC lệch trục kéo gương bằng đai GT2. Phía sau bị cột che khoảng 29°. Thân Ø150 mm, cao 245 mm, mặt quét ở 185 mm. Kích thước tự đặt.",
-    map:{"vo_de":"vo","tam_do":"co_khi","tru_do_45":"co_khi","tru_do_135":"co_khi","tru_do_225":"co_khi","tru_do_315":"co_khi","pcb_chinh":"pcb","ong_luon_cap_0":"vo","ong_luon_cap_1":"vo","ong_luon_cap_2":"vo","stm32":"pcb","w5500_ethernet":"pcb","switch_ethernet_ic":"pcb","rj45_ra_ngoai":"pcb","rj45_camera":"pcb","cau_dau_24v":"pcb","cau_chi":"pcb","buck_ic":"pcb","cuon_cam_buck":"pcb","driver_foc":"pcb","jst_dong_co":"pcb","jst_encoder":"pcb","jst_tf03":"pcb","jst_moc0":"pcb","swd":"pcb","relay_1":"pcb","relay_2":"pcb","relay_3":"pcb","relay_4":"pcb","cau_dau_relay":"pcb","tu_0":"pcb","tu_1":"pcb","tu_2":"pcb","led_0":"pcb","led_1":"pcb","led_2":"pcb","tf03":"tf03","thau_kinh_0":"tf03","thau_kinh_1":"tf03","gia_tf03_-1":"tf03","gia_tf03_1":"tf03","dong_co_bldc":"truyen_dong","encoder_as5048":"truyen_dong","truc_dong_co":"truyen_dong","puly_20T":"truyen_dong","dai_gt2":"truyen_dong","o_bi_mong":"truyen_dong","phan_quay":"phan_quay","guong_45":"phan_quay","cam_bien_khe_moc0":"co_khi","ong_cua_so":"cua_so","nap_tren":"nap","camera":"camera","ong_kinh_camera":"camera","gia_camera":"camera","cot_lap_dat":"ga_cot","tam_ga":"ga_cot","kep_cot_30":"ga_cot","kep_cot_120":"ga_cot"},
-    rot:["phan_quay","guong_45"],
-    view:{target:[0,130,0], pos:[620,420,760]},
-    G:{
-      phan_quay:{t:"Phần quay + gương 45°", sw:"#c3c6cb", ex:[0,0,95], d:"Puly 80 răng, ống rỗng Ø36 cho tia đi lên, khối nêm mang gương elip 45°. Tia ra nằm ngang theo hướng quay của gương (tỉ lệ 1:1).", dl:[["Gương","elip 62 × 44 mm"],["Tâm gương","z = 185 mm"],["Lá chắn mốc 0°","trên mép puly"]]},
-      truyen_dong:{t:"Truyền động đai", sw:"#2b2d31", ex:[0,0,40], d:"Động cơ BLDC dẹt có encoder từ, đặt lệch trục, kéo puly lớn qua đai GT2. Ổ bi thành mỏng lỗ to để tia đi xuyên qua tâm.", dl:[["Đai","GT2, 20T → 80T (tỉ số 4)"],["Ổ bi","40 × 52 × 7 mm"],["Động cơ","Ø40 × 18 mm, lệch trục 48 mm"]]},
-      co_khi:{t:"Tấm đỡ + cảm biến mốc 0°", sw:"#bfc2c7", ex:[0,0,0], d:"Tấm nhôm giữ ổ bi và động cơ, đứng trên 4 trụ. Cảm biến khe đọc lá chắn trên puly lớn mỗi vòng để bù sai số do đai giãn.", dl:[["Cao độ","z = 128 mm"]]},
-      tf03:{t:"TF03 chiếu lên", sw:"#202024", ex:[0,0,-80], d:"TF03 treo dưới tấm đỡ, hai thấu kính hướng lên, chiếu thẳng qua lỗ ổ bi và ống quay lên gương.", dl:[["Khối","44 × 31.8 × 42.9 mm (giả định)"],["Mặt kính","z = 118 mm"],["Kính → gương","67 mm"]]},
-      pcb:{t:"Bo mạch chính", sw:"#11663a", ex:[0,0,-190], d:"Bo tròn Ø138 mm: STM32, Ethernet W5500, switch Ethernet 3 cổng (LiDAR + camera + cáp ra), driver FOC, buck 24→5 V, 4 relay báo động ra cầu đấu.", dl:[["Vào","24 V, 1 cáp Ethernet"],["Ra","4 tiếp điểm relay"],["Nối","JST: TF03, động cơ, encoder, mốc 0°; SWD"]]},
-      vo:{t:"Vỏ đế", sw:"#8d949c", ex:[0,0,-360], d:"Vỏ nhôm kín, 3 ống luồn cáp M16 ở đáy: nguồn, Ethernet, relay.", dl:[["Kích thước","Ø150 × 150 mm"],["Mục tiêu","IP65"]]},
-      ga_cot:{t:"Gá hông cột", sw:"#5a6068", ex:[-160,0,0], d:"Tấm gá phía sau và hai vòng kẹp cột Ø76 mm. Cột che khoảng 29° phía sau.", dl:[["Cột","Ø76 mm"]]},
-      ...BASE},
-    notes:[
-      "<b>Không dây cắt mặt quét:</b> TF03 trong đế chiếu lên, gương quay trên ổ bi lỗ to, động cơ lệch trục kéo bằng đai.",
-      "<b>Cột che phía sau</b> khoảng 29° vì thiết bị gắn bên hông cột.",
-      "<b>Đổi lại:</b> đai đàn hồi nên góc phải lấy lại từ mốc 0° mỗi vòng (lá chắn + cảm biến khe trên puly lớn); thêm ổ bi, 2 puly, đai cần căng chỉnh.",
-      "<span class=\"tag\">chưa kiểm chứng</span> độ truyền qua 905 nm của ống cửa sổ, phản xạ ngược từ ống, tản nhiệt trong vỏ kín."]
-  }
-};
-const ORDER = ["nap","cua_so","phan_quay","truyen_dong","co_khi","tf03","pcb","vo","camera","ga_cot"];
-let cur = "v3", G = V.v3.G;
+  notes:[
+    "<b>TF03 ở trên, gương và động cơ ở dưới</b> như bản đồ án: truyền thẳng, không đai; encoder trên trục đọc trực tiếp góc gương.",
+    "<b>Đổi lại:</b> dây TF03 phải cắt qua mặt quét. Dây đi trong một gân mỏng phía sau, tạo vùng mù khoảng 17.4° (giả định chùm 15 mm). Xoay gân về hướng không cần giám sát và lọc cung này trong phần mềm.",
+    "<b>Nguồn:</b> 24 V vào qua M12 → bảo vệ → buck 5 V cho TF03 → LDO 3,3 V cho vi điều khiển; động cơ lấy từ 24 V qua driver FOC.",
+    "<span class=\"tag\">chưa kiểm chứng</span> kích thước thật của TF03, độ truyền qua 905 nm và phản xạ ngược của ống cửa sổ, bề rộng chùm tại gân, tản nhiệt trong vỏ kín."]
+}};
+const ORDER = ["nap","tf03","cua_so","phan_quay","dong_co","day_dien","pcb","ket_noi","vo"];
+let cur = "v4", G = V.v4.G;
 
 const canvas = document.getElementById("c");
 const renderer = new THREE.WebGLRenderer({canvas, antialias:true, preserveDrawingBuffer:true});
@@ -203,16 +173,19 @@ function themeColor(v){ return getComputedStyle(document.documentElement).getPro
 function applyTheme(){ scene.background = new THREE.Color(themeColor("--stage")); scanMat.color.set(themeColor("--accent")); beamMat.color.set(themeColor("--accent")); }
 
 // mat quet + tia (minh hoa)
-const SCAN_Z = 185;
+const SCAN_Z = 145;
 const scanMat = new THREE.MeshBasicMaterial({transparent:true, opacity:0.07, side:THREE.DoubleSide, depthWrite:false});
 const scan = new THREE.Mesh(new THREE.RingGeometry(70, 650, 128), scanMat); scan.position.z = SCAN_Z; model.add(scan);
 const beamMat = new THREE.MeshBasicMaterial({transparent:true, opacity:0.85});
 const beam = new THREE.Mesh(new THREE.CylinderGeometry(1.6,1.6,900,8), beamMat);
 beam.rotation.z = -Math.PI/2; beam.position.set(450,0,0);
-const beamUp = new THREE.Mesh(new THREE.CylinderGeometry(1.6,1.6,SCAN_Z-118,8), beamMat);
-beamUp.rotation.x = Math.PI/2; beamUp.position.set(0,0,(SCAN_Z+118)/2);
+const beamUp = new THREE.Mesh(new THREE.CylinderGeometry(1.6,1.6,LENS_Z-SCAN_Z,8), beamMat);
+beamUp.rotation.x = Math.PI/2; beamUp.position.set(0,0,(SCAN_Z+LENS_Z)/2);
 const beamPivot = new THREE.Group(); beamPivot.position.z = SCAN_Z; beamPivot.add(beam);
 model.add(beamPivot); model.add(beamUp);
+const blindMat = new THREE.MeshBasicMaterial({color:0x222831, transparent:true, opacity:0.35, side:THREE.DoubleSide, depthWrite:false});
+const blind = new THREE.Mesh(new THREE.RingGeometry(70, 650, 24, 1, Math.PI - BLIND_DEG*Math.PI/360, BLIND_DEG*Math.PI/180), blindMat);
+blind.position.z = SCAN_Z + 0.5; model.add(blind);
 
 // ---- tai mo hinh (GLB dang base64 trong file .txt) ----
 const loader = new GLTFLoader();
@@ -238,11 +211,11 @@ function build(gltf, v){
   gltf.scene.traverse(o => {
     if (!o.isMesh) return;
     const name = MAP[o.name] ? o.name : (o.parent && MAP[o.parent.name] ? o.parent.name : o.name);
-    const key = MAP[name] || "vo";
+    const key = MAP[name] || (name.startsWith("day_") ? "day_dien" : "vo");
     const m = new THREE.MeshStandardMaterial({color:o.material.color.clone(), metalness:0.25, roughness:0.55, clippingPlanes:[clip], side:THREE.DoubleSide});
     if (name === "ong_cua_so"){ m.transparent = true; m.opacity = 0.22; m.depthWrite = false; m.metalness = 0; m.roughness = 0.05; }
     if (name === "guong_45"){ m.metalness = 1; m.roughness = 0.04; m.color.set(0xf2f4f7); }
-    if (/^(rj45|tru_do|cau_chi|tu_|truc|o_bi|bulong)/.test(name)){ m.metalness = 0.8; m.roughness = 0.3; }
+    if (/^(m12|tru_|cau_chi|tu_|thach_anh)/.test(name)){ m.metalness = 0.8; m.roughness = 0.3; }
     m.userData.baseOpacity = m.opacity; m.userData.baseTransparent = m.transparent;
     const g = new THREE.Mesh(o.geometry, m); g.name = name; g.userData.key = key;
     g.applyMatrix4(o.matrixWorld); g.applyMatrix4(fix);
@@ -305,31 +278,29 @@ canvas.addEventListener("pointerup", e => {
 
 // ---- dieu khien ----
 const ex = document.getElementById("ex"), exv = document.getElementById("exv");
-const scanChk = document.getElementById("scan"), spinChk = document.getElementById("spin"), poleChk = document.getElementById("pole");
+const scanChk = document.getElementById("scan"), spinChk = document.getElementById("spin"), blindChk = document.getElementById("blind");
 function applyExplode(){
   const t = ex.value/100; exv.textContent = ex.value + " %";
   for (const k of ORDER){ const v = G[k].ex; groups[k].position.set(v[0]*t, v[1]*t, v[2]*t); }
-  scan.position.z = SCAN_Z + G.phan_quay.ex[2]*t; beamPivot.position.z = scan.position.z;
+  scan.position.z = SCAN_Z + G.phan_quay.ex[2]*t; beamPivot.position.z = scan.position.z; blind.position.z = scan.position.z + 0.5;
   beamUp.visible = t < 0.02 && scanChk.checked;
 }
-function applyPole(){ for (const m of meshes) if (m.name === "cot_lap_dat") m.visible = poleChk.checked; }
+function applyPole(){ blind.visible = blindChk.checked; }
 ex.addEventListener("input", applyExplode);
 let cutOn = false;
 document.getElementById("cut").addEventListener("change", e => { cutOn = e.target.checked; clip.constant = cutOn ? 0 : 1e6; });
 scanChk.addEventListener("change", () => { scan.visible = beamPivot.visible = scanChk.checked; beamUp.visible = scanChk.checked && ex.value == 0; });
-poleChk.addEventListener("change", applyPole);
+blindChk.addEventListener("change", applyPole);
 document.getElementById("reset").addEventListener("click", resetView);
 document.getElementById("clear").addEventListener("click", () => select(null));
 
 function setVariant(v){
   cur = v; G = V[v].G;
-  document.querySelectorAll(".seg button").forEach(b => b.setAttribute("aria-checked", String(b.dataset.v === v)));
-  document.getElementById("sub").textContent = V[v].sub;
+    document.getElementById("sub").textContent = V[v].sub;
   document.getElementById("notes").innerHTML = V[v].notes.map(n => `<li>${n}</li>`).join("");
   selected = null;
   loadVariant(v);
 }
-document.querySelectorAll(".seg button").forEach(b => b.addEventListener("click", () => setVariant(b.dataset.v)));
 
 const mq = matchMedia("(prefers-color-scheme: dark)");
 mq.addEventListener?.("change", applyTheme);
@@ -343,7 +314,7 @@ function resize(){
   }
 }
 applyTheme();
-setVariant("v3");
+setVariant("v4");
 const clock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
   resize();
