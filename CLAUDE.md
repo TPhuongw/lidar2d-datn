@@ -1,6 +1,6 @@
 # CLAUDE.md: Đồ án LiDAR 2D từ LiDAR 1D (TF03)
 
-Tài liệu ngữ cảnh cho Claude Code. Cập nhật lần cuối: 06/11/2026.
+Tài liệu ngữ cảnh cho Claude Code. Cập nhật lần cuối: 06/11/2026 (chiều).
 Người làm: Phương, sinh viên năm cuối Điện tử – Viễn thông, thực tập tại công ty LiDAR.
 Luôn trả lời bằng tiếng Việt. Thuật ngữ chuyên ngành giữ tiếng Anh kèm giải thích. Không khen xã giao. Có chính kiến; khi có nhiều phương án thì nêu rõ nên chọn cái nào.
 
@@ -22,7 +22,7 @@ Ký hiệu trong file: **[ĐÃ CHỐT]** quyết định đã xác nhận · **[
 
 | Khối | Linh kiện | Trạng thái / thông số chính |
 |---|---|---|
-| Cảm biến | **Benewake TF03-180** ×2 (S/N U6600386020170, firmware 1.1.24) | 5–24 V, ~150 mA @5 V; UART LVTTL 3,3 V; CAN (không dùng). Dây: đỏ VCC, đen GND, **nâu TX**, **xanh dương RX**, trắng/xanh lá CAN. Cả hai con đã lưu cấu hình **115200 baud, 1000 Hz**, 0 lỗi checksum **[ĐO THẬT]** |
+| Cảm biến | **Benewake TF03-180** ×2 (S/N U6600386020170, firmware 1.1.24) | 5–24 V, ~150 mA @5 V; UART LVTTL 3,3 V; CAN (không dùng). Dây: đỏ VCC, đen GND, **nâu TX**, **xanh dương RX**, trắng/xanh lá CAN. Cả hai con đã lưu cấu hình **115200 baud, 1000 Hz**, 0 lỗi checksum **[ĐO THẬT]**. Datasheet (Mouser) ghi 1–1000 Hz, nhưng **đã chạy thật 2000 Hz** (04/11, log trong `data/`, baud tăng theo quy tắc 112×Hz) **[ĐO THẬT]**; chưa chứng minh mỗi khung là một lần đo độc lập (xem mục 6) |
 | Gương 45° | Cụm cốc gương tháo từ máy quét SICK | Đĩa encoder **180 vạch, có 1 vạch rộng** (người dùng đếm tay) |
 | Động cơ | **Leadshine 42CME06** (NEMA17, 0,6 N·m, 2,5 A, có encoder A/B, không có kênh index) + driver **CL42C** | **[ĐÃ CHỐT]** (leader chọn). Driver: jumper tín hiệu đặt **5 V**; DIP 3200 xung/vòng (SW1 off, SW2 off, SW3 on, SW4 on); SW6 off = vòng kín; SW7 off = PUL/DIR. Lỗi nháy đỏ 7 lần = lỗi bám vị trí. Chạy vòng kín ổn định **[ĐO THẬT]** |
 | Mốc 0° | **Lá chắn thiếc trên phần quay + module cảm biến khe LM393** (3 chân VCC/GND/DO) | **[ĐÃ CHỐT]** thay cho đọc vạch rộng trên đĩa 180 vạch (kém tin cậy do rung cạnh, mất tín hiệu). OPB tháo từ SICK chỉ còn dự phòng |
@@ -83,6 +83,7 @@ Khi chạy trên breadboard với STM32: driver nối kiểu anode chung (PUL+/D
 - **Mốc 0° bằng lá chắn + LM393** (UNO, Timer1 đếm bước): ở 1–4 vòng/s, số bước mỗi vòng luôn **3200**, độ lặp lại **0 bước** (tốt hơn 0,11°). Mốc dịch theo tốc độ (so với 1 vòng/s): **9 / 17 / 24 bước** ở 2 / 3 / 4 vòng/s, khoảng 8,3 bước/(vòng/s), tương đương trễ khoảng 2,6 ms. Nguyên nhân chưa tách được: sai số bám của driver hoặc trễ phát hiện mốc. Số vòng đo mỗi tốc độ: **[CẦN BỔ SUNG]**.
 - **Đọc đĩa 180 vạch bằng OPB:** mỗi vạch bị đếm khoảng 4 lần do rung cạnh (chùm rung ≤ khoảng 160 µs). Lọc khóa 300 µs thì đếm đúng 179–180 và 540 cạnh/s. Có lúc mất tín hiệu một đoạn mỗi vòng do gá lỏng hoặc mối hàn chập chờn.
 - **Bản đồ 2D đầu tiên** (03/11, PC + UNO): tường thẳng, khoảng 990–1025 điểm/vòng ở 1 vòng/s; TF03 thực tế khoảng 1000–1025 Hz. Đối chiếu sơ đồ phòng: tủ phải khoảng 2,7 m và tường dưới khoảng 3,5 m khớp. Bản đồ cần **Xoay ≈ −40°, không đảo chiều** **[GIẢ ĐỊNH, đọc từ ảnh]**.
+- **TF03 ở 2000 Hz** (04/11, `data/log_20261104_120106` 1,5 vòng/s 371 s; `data/log_20261104_141825` 3 vòng/s 697 s): tần số khung đo được 1999,1–1999,9 Hz, mất 93/741 234 và 197/1 392 848 khung. 30–36 % cặp khung liên tiếp trùng cả dist lẫn strength (nếu độc lập thì kỳ vọng khoảng 21 %), giá trị đổi khoảng 1400 lần/s. **Chưa kết luận** TF03 đo thật 2000 lần/s hay lặp khung: cần thí nghiệm tường tĩnh so 1000/2000/5000 Hz (độ lệch chuẩn, tự tương quan trễ 1, tỉ lệ khung trùng). 5000 Hz chưa thử.
 - Phòng thử nghiệm ước lượng khoảng **3,47 × 5,37 m** (suy từ bản vẽ, **chưa đo bằng thước**). LiDAR đặt trên bàn sát tường trái (gần máy tính), cột quay về tường, mặt quét khoảng 0,91 m. Mô phỏng: thấy khoảng 90,9 % diện tích.
 
 ## 7. Quyết định kỹ thuật
