@@ -1,6 +1,6 @@
 # CLAUDE.md: Đồ án LiDAR 2D từ LiDAR 1D (TF03)
 
-Tài liệu ngữ cảnh cho Claude Code. Cập nhật lần cuối: 04/11/2026.
+Tài liệu ngữ cảnh cho Claude Code. Cập nhật lần cuối: 06/11/2026.
 Người làm: Phương, sinh viên năm cuối Điện tử – Viễn thông, thực tập tại công ty LiDAR.
 Luôn trả lời bằng tiếng Việt. Thuật ngữ chuyên ngành giữ tiếng Anh kèm giải thích. Không khen xã giao. Có chính kiến; khi có nhiều phương án thì nêu rõ nên chọn cái nào.
 
@@ -13,6 +13,10 @@ Ký hiệu trong file: **[ĐÃ CHỐT]** quyết định đã xác nhận · **[
 - Ứng dụng: **giám sát vật cản tại đường ngang đường sắt** (xe chết máy, người đi vào khi tàu sắp tới).
 - Sản phẩm cuối cần: phần cứng chạy thật, firmware, phần mềm PC (bản đồ 2D + vùng cấm + báo động), số liệu đánh giá sai số, báo cáo tốt nghiệp.
 - Mở rộng theo yêu cầu: **ghép 2–4 LiDAR đồng bộ** thành bản đồ chung. Cụ thể yêu cầu đồng bộ gì vẫn chờ xác nhận (xem mục 7).
+- **Hai mục tiêu:** đồ án tốt nghiệp (bản mẫu chứng minh nguyên lý, PoC) **và** hướng thương mại hóa (phiên bản 2). Bản đồ án không cố đạt chuẩn thương mại, nhưng ưu tiên quyết định dùng tiếp được: gói dữ liệu, firmware chia lớp (phần cứng / giao thức / vận chuyển), thuật toán phát hiện.
+  - Phần **tạm cho bản đồ án**, bản thương mại phải thay: gương SICK tháo máy (không mua lại được), động cơ bước 42CME06 + CL42C (dự kiến thay BLDC + encoder), Nucleo (thay bo tự thiết kế dùng chip STM32).
+  - Chờ hỏi leader: quyền sở hữu trí tuệ và mức công bố báo cáo; bộ yêu cầu kỹ thuật có số (tầm, vật nhỏ nhất, thời gian báo động, tỉ lệ báo giả, môi trường).
+- **Hướng phát triển sau đồ án (KHÔNG làm trong đồ án):** tích hợp bên thứ ba, ví dụ LiDAR phát hiện → camera PTZ quay tới xác nhận (slew-to-cue). Cần: theo dõi đối tượng (`track.py`), hệ tọa độ hiện trường chung, đầu ra sự kiện (`output.py`: JSON qua MQTT/HTTP, ONVIF PTZ, hoặc relay → alarm-in camera theo vùng/preset). Độ chính xác định vị hiện tại thừa đủ cho camera; yếu tố quyết định là độ trễ và ID ổn định.
 
 ## 2. Phần cứng
 
@@ -95,6 +99,7 @@ Khi chạy trên breadboard với STM32: driver nối kiểu anode chung (PUL+/D
 - Thu PCB về cỡ shield Arduino (~69 × 53 mm, buck MP2459/LMR16006, cần tra datasheet); đặt PCB trên đế sát chân cột; adapter 24 V.
 - Giảm vùng mù do cột: thanh tròn mảnh đặt xa hơn (góc mù ≈ 2·atan((rộng cột + rộng chùm)/2 / khoảng cách); hiện tính ra khoảng 24,7° với chùm 15 mm **[GIẢ ĐỊNH]**); nhiều máy che vùng mù cho nhau.
 - Chừa sẵn đầu nối SPI cho module Ethernet W5500.
+- Chừa sẵn 2–4 ngõ ra GPIO qua transistor (relay báo động theo vùng / alarm-in camera về sau).
 
 **Câu hỏi đang chờ người dùng:** yêu cầu cụ thể của "kết nối 2–4 con đồng bộ"; khoảng cách giữa các máy; máy chủ (PC hay Pi); có gương cho máy thứ hai không; model của LiDAR thương mại dùng LAN; danh sách đồ Thorlabs; hạn nộp đồ án.
 
