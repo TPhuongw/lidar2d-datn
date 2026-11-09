@@ -328,7 +328,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _redraw_recent(self, *_):
         p = self._xy_params()
-        self.recent = [(sc, dict(core.to_xy(sc, **p), fg=np.zeros(0, bool), objs=[])) for sc, _ in self.recent]
+        new_rec = []
+        for sc, _ in self.recent:
+            xy = core.to_xy(sc, **p)
+            objs, fg = self.det.classify(xy)
+            xy["fg"], xy["objs"] = fg, objs
+            new_rec.append((sc, xy))
+        self.recent = new_rec
         self._draw()
 
     def _draw(self):
@@ -417,7 +423,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.bt_draw.setText("Vẽ vùng cấm")
             if len(self.draft) >= 3:
                 self.det.zone = list(self.draft)
-            self.draft = []; self.draft_item.setData([], []); self._draw_zone()
+            self.draft = []; self.draft_item.setData([], []); self._draw_zone(); self._redraw_recent()
 
     def on_click(self, ev):
         if not self.drawing or ev.button() != QtCore.Qt.LeftButton:
@@ -428,7 +434,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.draft_item.setData(xs, ys)
 
     def clear_zone(self):
-        self.det.zone = []; self._draw_zone()
+        self.det.zone = []; self._draw_zone(); self._redraw_recent()
 
     def _draw_zone(self):
         z = self.det.zone
@@ -444,6 +450,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _apply_detect_params(self, *_):
         self.det.margin = self.sp_margin.value(); self.det.min_size = self.sp_size.value()
         self.det.on_revs = self.sp_on.value(); self.det.use_bg = self.ck_bg.isChecked()
+        self._redraw_recent()
 
     # ------------------------------------------------------------ luu
     def _outdir(self, sub):
@@ -458,7 +465,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _snapshot(self):
         if self.recent:
-            fn = os.path.join(self._outdir("su_kien"), time.strftime("baodong_%H%M%S.png"))
+            fn = os.path.join(self._outdir("su_kien"), "%s_vong%d.png" % (time.strftime("baodong_%H%M%S"), self.recent[-1][0].seq))
             self.plot.grab().save(fn)
 
     def save_csv(self):

@@ -126,7 +126,7 @@ def tf03_set_baud(port, baud, new_baud):
 
 # ------------------------------------------------------------------ dong bo dong ho
 class ClockSync:
-    """t_PC = a + b*remote + tre (tre >= 0). b: hoi quy; a: bien duoi trong cua so gan nhat."""
+    """t_PC = a + b*remote + tre (tre >= 0). b: do doc bien duoi theo cum; a: bien duoi trong cua so."""
 
     def __init__(self, n=400, every=10):         # every: cap nhat a, b sau moi bay nhieu mau
         self.r, self.l = collections.deque(maxlen=n), collections.deque(maxlen=n)
@@ -138,9 +138,15 @@ class ClockSync:
             self.base = remote
         self.r.append(remote - self.base); self.l.append(local); self.cnt += 1
         if len(self.r) >= 5 and (self.b is None or self.cnt % self.every == 0):
-            R, L = np.array(self.r), np.array(self.l)
+            R, L = np.array(self.r, float), np.array(self.l, float)
             if np.ptp(R) > 0:
-                self.b = float(np.polyfit(R, L, 1)[0])
+                k = min(8, len(R) // 2)
+                edges = np.linspace(0, len(R), k + 1, dtype=int)
+                b0 = self.b if self.b is not None else (L[-1] - L[0]) / (R[-1] - R[0])
+                im = [u + int(np.argmin(L[u:v] - b0 * R[u:v])) for u, v in zip(edges[:-1], edges[1:]) if v > u]
+                rb, lb = R[im], L[im]
+                sl = [(lb[j] - lb[i]) / (rb[j] - rb[i]) for i in range(len(rb)) for j in range(i + 1, len(rb)) if rb[j] > rb[i]]
+                self.b = float(np.median(sl)) if sl else float(np.polyfit(R, L, 1)[0])
                 self.a = float(np.min(L - self.b * R))
 
     def ready(self):
@@ -165,9 +171,9 @@ class Scan:
 
 class Mapper:
     def __init__(self):
-        self.frames = collections.deque()      # (n, dist, strength)
-        self.idx = []                          # moc 0 do theo dong ho nguon
-        self.cf, self.ci = ClockSync(400), ClockSync(60, every=1)   # moc thua (vai moc/s) nen cap nhat moi moc
+        self.pkts = collections.deque()        # (items, t_arr, m_cum)
+        self.idx = []                          # (remote, t_arr) moc 0 do
+        self.cf, self.ci = ClockSync(400, every=20), ClockSync(60, every=1)
         self.done_key = None                   # moc dau cua vong da xu ly gan nhat
         self.seq = 0
         self.lock = threading.Lock()
@@ -175,19 +181,30 @@ class Mapper:
         self.n_frames = self.n_idx = 0
         self.t_last_frame = self.t_last_idx = None
         self.last_n = None                     # so thu tu khung moi nhat da nhan
+        self._m_cum = 0.0
+        self._t_env = None
 
     def add_frames(self, items, t_arr):
         if not items:
             return
         with self.lock:
-            self.frames.extend(items)
             self.n_frames += len(items); self.t_last_frame = t_arr
             self.cf.add(items[-1][0], t_arr)
             self.last_n = items[-1][0]
+            b = self.cf.b or 0.001
+            mk = float(len(items))
+            if self._t_env is None:
+                self._t_env = t_arr
+                self._m_cum += mk
+            else:
+                dt = max(0.0, t_arr - self._t_env)
+                self._m_cum += min(mk, max(1.0, (dt + 0.018) / b))
+                self._t_env = min(t_arr, self._t_env + mk * b)
+            self.pkts.append((items, t_arr, self._m_cum))
 
     def add_index(self, remote, t_arr):
         with self.lock:
-            self.idx.append(remote); self.n_idx += 1; self.t_last_idx = t_arr
+            self.idx.append((remote, t_arr)); self.n_idx += 1; self.t_last_idx = t_arr
             self.ci.add(remote, t_arr)
             if len(self.idx) > 60:
                 self.idx = self.idx[-60:]
@@ -196,42 +213,58 @@ class Mapper:
         with self.lock:
             if len(self.idx) < 2 or not self.ci.ready():
                 return np.array([])
-            return np.diff(self.ci.to_local(self.idx[-20:]))
+            return np.diff(self.ci.to_local([r for r, _ in self.idx[-20:]]))
 
     def process(self):
         """Tra ve danh sach Scan vua hoan thanh (co the nhieu vong khi phat lai nhanh)."""
         out = []
         with self.lock:
-            if len(self.idx) < 3 or not (self.cf.ready() and self.ci.ready()):
+            if len(self.idx) < 3 or not (self.cf.ready() and self.ci.ready()) or not self.pkts:
                 return out
-            I = self.ci.to_local(self.idx)
-            tf = self.cf.to_local
+            rem = [r for r, _ in self.idx]
+            I = self.ci.to_local(rem)
+            b = self.cf.b
+            T_p = np.array([p[1] for p in self.pkts], float)
+            M_p = np.array([p[2] for p in self.pkts], float)
+            u = T_p - b * M_p
+            for w in range(1, min(16, len(u))):
+                u[:-w] = np.minimum(u[:-w], u[w:])
+            T_end = u + b * M_p
             for j in range(len(self.idx) - 1):
-                key = self.idx[j]
+                key = rem[j]
                 if self.done_key is not None and key <= self.done_key:
                     continue
                 if j == 0:                       # chua biet vong truoc do -> chi dung de dong bo
                     self.done_key = key
                     continue
-                i0, i1 = I[j], I[j + 1]
-                if tf(self.last_n) < i1:         # khung cuoi vong chua ve het -> cho lan goi sau
+                i0, i1 = float(I[j]), float(I[j + 1])
+                if T_end[-1] < i1 + 0.02:        # cho them vai goi sau i1 de khu tre goi cuoi vong
                     break
-                d = np.diff(I[max(0, j - 5):j + 2])
-                T = float(np.median(d))
-                while self.frames and tf(self.frames[0][0]) < i0:
-                    self.frames.popleft()
-                rev = []
-                while self.frames and tf(self.frames[0][0]) < i1:
-                    rev.append(self.frames.popleft())
+                T = i1 - i0
+                d_per = np.diff(I[max(0, j - 5):j + 2])
+                T_med = float(np.median(d_per))
+                while len(self.pkts) > 1 and T_end[0] < i0:
+                    self.pkts.popleft(); T_end = T_end[1:]
+                ft, fd, fs = [], [], []
+                for (items, _, _), te in zip(self.pkts, T_end):
+                    k = len(items)
+                    if te - k * b >= i1:
+                        break
+                    for r, (_, d, s) in enumerate(items):
+                        tf = te - (k - 1 - r) * b
+                        if i0 <= tf < i1:
+                            ft.append(tf); fd.append(d); fs.append(s)
                 self.done_key = key
-                if not rev:
+                t_idx0, t_idx1 = self.idx[j][1], self.idx[j + 1][1]
+                # bo qua vong dang tang/giam toc (>3%) hoac bi treo PC (>80 ms mat du lieu)
+                if abs(T - T_med) / T_med > 0.03 or max(t_idx0 - i0, t_idx1 - i1) > 0.1 or not ft:
                     continue
-                n = np.array([f[0] for f in rev], float)
-                ang = 360.0 * (tf(n) - i0) / T
+                ft = np.array(ft, float)
+                if np.max(np.diff(np.r_[i0, ft, i1])) > 0.08:
+                    continue
+                ang = 360.0 * (ft - i0) / T
                 self.seq += 1
-                out.append(Scan(self.seq, float(i0), T, ang,
-                                np.array([f[1] for f in rev], float),
-                                np.array([f[2] for f in rev], float), len(rev)))
+                out.append(Scan(self.seq, i0, T, ang, np.array(fd, float), np.array(fs, float), len(ft)))
         return out
 
 
@@ -240,8 +273,9 @@ def to_xy(scan, r0=0.0, offset_deg=0.0, direction=1, max_cm=3000, min_str=0):
     d, s, a = scan.dist_cm, scan.strength, scan.angle_deg
     ok = (d > 0) & (d <= max_cm) & (s >= min_str) & (a >= 0) & (a < 360)
     th = np.radians(direction * a[ok] + offset_deg)
-    r = d[ok] / 100.0 - r0
-    return dict(x=r * np.cos(th), y=r * np.sin(th), r=r, ang=a[ok], s=s[ok], ok=ok)
+    d_m = d[ok] / 100.0
+    r = d_m - r0
+    return dict(x=r * np.cos(th), y=r * np.sin(th), r=r, d_m=d_m, ang=a[ok], s=s[ok], ok=ok)
 
 
 # ------------------------------------------------------------------ nguon du lieu
@@ -272,57 +306,61 @@ class LiveSource:
 
     def _tf03(self):
         import serial
-        ser = serial.Serial(self.tf_port, self.tf_baud, timeout=0.01)
-        ser.reset_input_buffer()
-        buf, n = bytearray(), 0
-        while not self.stop_ev.is_set():
-            data = ser.read(max(1, ser.in_waiting))
-            if not data:
-                continue
-            t_arr = time.perf_counter()
-            buf += data
-            frames, rest, bad = parse_tf03(buf)
-            buf = bytearray(rest); self.bad_frames += bad; n += bad
-            items = []
-            for d, s in frames:
-                items.append((n, d, s)); n += 1
-            self.m.add_frames(items, t_arr)
-            for it in items:
-                self.flog.write("%d,%d,%d,%.6f\n" % (it + (t_arr,)))
-        ser.close()
+        with serial.Serial(self.tf_port, self.tf_baud, timeout=0.01) as ser:
+            ser.reset_input_buffer()
+            buf, n = bytearray(), 0
+            while not self.stop_ev.is_set():
+                data = ser.read(max(1, ser.in_waiting))
+                if not data:
+                    continue
+                if ser.in_waiting:               # hut het byte den trong luc cho GIL truoc khi lay moc thoi gian
+                    data += ser.read(ser.in_waiting)
+                t_arr = time.perf_counter()
+                buf += data
+                frames, rest, bad = parse_tf03(buf)
+                buf = bytearray(rest); self.bad_frames += bad; n += bad
+                items = []
+                for d, s in frames:
+                    items.append((n, d, s)); n += 1
+                self.m.add_frames(items, t_arr)
+                for it in items:
+                    self.flog.write("%d,%d,%d,%.6f\n" % (it + (t_arr,)))
 
     def _uno(self):
         import serial
-        ser = serial.Serial(self.uno_port, 115200, timeout=0.1)
-        self.uno = ser
-        time.sleep(2.5)
-        ser.reset_input_buffer()
-        self.set_speed(self.rps)
-        last_us, wrap = None, 0
-        while not self.stop_ev.is_set():
-            line = ser.readline()
-            if not line:
-                continue
-            t = time.perf_counter() - len(line) * 10 / 115200
-            txt = line.decode(errors="ignore").strip()
-            if txt.startswith("MOC 0"):
-                mm = re.search(r"t=(\d+)", txt)
-                if mm:
-                    us = int(mm.group(1))
-                    if last_us is not None and us < last_us:
-                        wrap += 1 << 32
-                    last_us = us
-                    remote = (us + wrap) * 1e-6
-                else:
-                    remote = t
-                self.m.add_index(remote, t)
-                self.ilog.write("%.6f,%.6f\n" % (remote, t))
-            elif txt:
-                self.uno_lines.append(txt)
-        try:
-            ser.write(b"r 0\n"); time.sleep(0.2)
-        finally:
-            ser.close()
+        with serial.Serial(self.uno_port, 115200, timeout=0.1) as ser:
+            self.uno = ser
+            time.sleep(2.5)
+            ser.reset_input_buffer()
+            self.set_speed(self.rps)
+            last_us, wrap = None, 0
+            try:
+                while not self.stop_ev.is_set():
+                    line = ser.readline()
+                    if not line:
+                        continue
+                    t = time.perf_counter() - len(line) * 10 / 115200
+                    txt = line.decode(errors="ignore").strip()
+                    if txt.startswith("MOC 0"):
+                        mm = re.search(r"t=(\d+)", txt)
+                        if mm:
+                            us = int(mm.group(1))
+                            if last_us is not None and us < last_us:
+                                wrap += 1 << 32
+                            last_us = us
+                            remote = (us + wrap) * 1e-6
+                        else:
+                            remote = t
+                        self.m.add_index(remote, t)
+                        self.ilog.write("%.6f,%.6f\n" % (remote, t))
+                    elif txt:
+                        self.uno_lines.append(txt)
+            finally:
+                self.uno = None
+                try:
+                    ser.write(b"r 0\n"); time.sleep(0.2)
+                except Exception:
+                    pass
 
     def set_speed(self, rps):
         self.rps = rps

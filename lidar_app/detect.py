@@ -70,8 +70,9 @@ class Background:
                 bg = np.nanmedian(S, axis=0)
             valid = np.sum(~np.isnan(S), axis=0) >= max(2, len(S) // 3)
             self.bg = np.where(valid, bg, np.inf)
-            # lap lo trong giua cac o co nen: lay min hai ben (tranh bao gia o mep vat)
-            self.bg = np.minimum(self.bg, np.minimum(np.roll(self.bg, 1), np.roll(self.bg, -1)))
+            # lap lo trong va chong bao gia o mep vat khi goc dao dong ~1 do: lay min trong lan can +-2 o
+            for k in (1, 2):
+                self.bg = np.minimum(self.bg, np.minimum(np.roll(self.bg, k), np.roll(self.bg, -k)))
             return True
         return False
 
@@ -117,23 +118,33 @@ class Detector:
         self._on = self._off = 0
         self.events = []                # (thoi gian, kieu, mo ta)
 
+    def classify(self, xy):
+        """Tinh (objs, mask_fg) cho xy ma khong thay doi bo dem bao dong."""
+        x, y, ang = xy["x"], xy["y"], xy["ang"]
+        d_m = xy.get("d_m", xy["r"])
+        if self.bg.learning_left > 0 or (self.use_bg and not self.bg.ready()):
+            return [], np.zeros(len(x), bool)
+        fg = self.bg.foreground(ang, d_m, self.margin) if self.use_bg else np.ones(len(x), bool)
+        if len(self.zone) >= 3:
+            fg &= point_in_polygon(x, y, self.zone)
+        else:
+            fg &= False                                  # chua co vung cam -> khong bao dong
+        objs = cluster(ang[fg], x[fg], y[fg], self.gap, self.min_pts, self.min_size)
+        return objs, fg
+
     def step(self, xy):
         """xy: dict tu core.to_xy. Tra ve (objs, mask_fg, alarm_moi_bat)."""
-        x, y, r, ang = xy["x"], xy["y"], xy["r"], xy["ang"]
+        x, ang = xy["x"], xy["ang"]
+        d_m = xy.get("d_m", xy["r"])
         if self.bg.learning_left > 0:
-            done = self.bg.feed(ang, r)
+            done = self.bg.feed(ang, d_m)
             if done:
                 self.events.append((time.time(), "INFO", "Học nền xong"))
             return [], np.zeros(len(x), bool), False
         if self.use_bg and not self.bg.ready():          # chua hoc nen -> khong phan biet duoc tuong voi vat
             self.alarm, self._on, self._off = False, 0, 0
             return [], np.zeros(len(x), bool), False
-        fg = self.bg.foreground(ang, r, self.margin) if self.use_bg else np.ones(len(x), bool)
-        if len(self.zone) >= 3:
-            fg &= point_in_polygon(x, y, self.zone)
-        else:
-            fg &= False                                  # chua co vung cam -> khong bao dong
-        objs = cluster(ang[fg], x[fg], y[fg], self.gap, self.min_pts, self.min_size)
+        objs, fg = self.classify(xy)
         newly = False
         if objs:
             self._on += 1; self._off = 0
