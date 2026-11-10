@@ -39,17 +39,23 @@ class SpeedGate:
     Luc dong co tang toc, doi toc do hoac bi vuong, goc tinh theo thoi gian bi sai nen khong duoc phat hien va hoc nen.
     Log 17:14: binh thuong chu ky chi dao dong 0,02 %; chu ky lech 0,5 % da lam 23 % so diem khac nen."""
 
-    def __init__(self, n=3, tol=0.003):
-        self.n, self.tol, self.hist, self.ok, self.bg_mismatch = n, tol, [], False, False
+    def __init__(self, n=3, tol=0.003, rot_max=5.0):
+        self.n, self.tol, self.rot_max = n, tol, rot_max
+        self.reset()
 
     def reset(self):
-        self.hist, self.ok, self.bg_mismatch = [], False, False
+        self.hist, self.ok, self.bg_mismatch, self.sync_bad, self.rot, self.steady = [], False, False, False, None, False
 
-    def update(self, period, bg_period=None):
+    def update(self, period, bg_period=None, sync_ok=True, rot_deg=None):
+        """sync_ok=False: lau khong nhan duoc moc 0 do dung gio. rot_deg: vong quet xoay so voi nen (do).
+        Ca hai deu nghia la goc dang sai -> khong phat hien (vat gia o mep tuong)."""
         self.hist = (self.hist + [period])[-self.n:]
         steady = len(self.hist) == self.n and (max(self.hist) - min(self.hist)) <= self.tol * min(self.hist)
         self.bg_mismatch = bg_period is not None and abs(period - bg_period) > self.tol * bg_period
-        self.ok = steady and not self.bg_mismatch
+        self.sync_bad = not sync_ok
+        self.rot = rot_deg if rot_deg is not None and abs(rot_deg) > self.rot_max else None
+        self.steady = steady and sync_ok and not self.bg_mismatch     # goc dang tin duoc ve mat thoi gian
+        self.ok = self.steady and self.rot is None
         return self.ok
 
 
@@ -173,6 +179,35 @@ class Background:
             raise ValueError("File nền không đúng độ phân giải góc.")
         self.bg, self.samples, self.learning_left = data["bg"] + data["r0"] - r0_now, [], 0
         self.t_learn, self.rps = data["t"], data["rps"]
+
+    def rotation(self, ang_deg, r, max_deg=60.0, min_frac=0.3):
+        """Uoc luong vong quet bi xoay bao nhieu do so voi nen (trung vi |r - nen| nho nhat theo do xoay).
+        Dung de phat hien goc sai do dong bo thoi gian, khong dung de sua goc. Tra ve (do, sai so trung vi m) hoac None."""
+        if self.bg is None:
+            return None
+        b = (np.asarray(ang_deg) / self.bin_deg).astype(int) % self.nb
+        row = np.full(self.nb, np.nan)
+        order = np.argsort(r)[::-1]
+        row[b[order]] = np.asarray(r)[order]
+        bg = np.where(np.isfinite(self.bg), self.bg, np.nan)
+        ks = np.arange(-int(max_deg / self.bin_deg), int(max_deg / self.bin_deg) + 1)
+        sh = row[(np.arange(self.nb)[None, :] - ks[:, None]) % self.nb]      # sh[i] = row xoay ks[i] o
+        d = np.abs(sh - bg[None, :])
+        cnt = np.sum(np.isfinite(d), axis=1)
+        if cnt.max() < min_frac * self.nb:
+            return None
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            score = np.nanmedian(d, axis=1)
+        score[cnt < min_frac * self.nb] = np.inf
+        i = int(np.argmin(score))
+        k = float(ks[i])
+        if 0 < i < len(ks) - 1 and np.isfinite(score[i - 1]) and np.isfinite(score[i + 1]):
+            den = score[i - 1] - 2 * score[i] + score[i + 1]      # noi suy parabol: duoi nua o, khong lech ve phia am khi hai o bang diem
+            if den > 1e-12:
+                k += float(np.clip(0.5 * (score[i - 1] - score[i + 1]) / den, -0.5, 0.5))
+        return k * self.bin_deg, float(score[i])
 
     def foreground(self, ang_deg, r, margin):
         if self.bg is None:

@@ -27,9 +27,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SETTINGS = os.path.join(HERE, "settings.json")
 BG_FILE = os.path.join(HERE, "nen.npz")
 BEEP_ZONE, BEEP_MOVE, BEEP_OFF = "Có vật trong vùng", "Có vật đang đi", "Tắt"
+ALIGN_REVS = 10       # so vong on dinh dung de can nen da luu
+ALIGN_WAIT_IDX = 20   # cho du so moc nay de dong ho moc on dinh roi moi do lech (luc dau goc lech them 1-2 do)
+ALIGN_MAX_DEG = 10.0  # lech goc toi da duoc tu bu; lon hon thi bao hoc lai
+ALIGN_MAX_ERR = 0.025 # m: sai so trung vi sau khi can; lon hon thi coi nhu LiDAR da bi doi -> hoc lai
+                      # (log 14:48: nen dung cho 1,0 cm; nen va vong cua hai log khac nhau 4-5,5 cm)
+ALIGN_MIN_DEG = 1.0   # lech duoi muc nay khong xoay nen (bo uoc luong lech he thong ~0,5 do, tranh don dan qua cac lan nap)
+ALIGN_MAX_SPREAD = 1.5  # do: cac vong cho do lech khac nhau qua muc nay thi khong tin
+SYNC_MAX_AGE = 30.0   # s: qua lau khong co moc 0 do nao ve dung gio thi goc khong con tin duoc -> chan phat hien
 DEFAULTS = dict(tf_port="COM12", uno_port="COM10", tf_baud=115200, tf_hz=1000, rps=1.0, r0=0.0, offset=0.0, dir=1, maxcm=3000, minstr=0,
                 accum=1, color="cường độ", view=5.0, zone=[], margin=0.15, min_size=0.10, on_revs=3,
-                learn_revs=20, replay_dir="", replay_speed=1.0, lock_cal=False, merge_d=0.6, merge_dv=0.25, hold_s=60.0, beep_mode="Có vật trong vùng", area_max=8.0)
+                learn_revs=20, replay_dir="", replay_speed=1.0, lock_cal=False, merge_d=0.6, merge_dv=0.25, hold_s=60.0, beep_mode="Có vật trong vùng", area_max=8.0, auto_bg=True)
 
 
 class BeepPlayer:
@@ -125,7 +133,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.rate_hist = []                 # (t, n_frames) tinh toc do khung
         self.alog = None                    # log moc thoi gian bao dong
         self.tracker, self.tlog, self.elog = detect.Tracker(), None, None
-        self.gate = detect.SpeedGate()
+        self.gate = detect.SpeedGate(); self.sync_ok_prev = True; self.n_rot_bad = 0
+        self.align = None                       # list do lech tung vong khi dang can nen da luu
+        self.rot_hist = []                      # do lech cac vong on dinh gan nhat (phat hien gia bi xoay khi dang chay)
         self.area, self.last_logdir, self.last_tag = None, None, ""
         self.zone_info = None                # dien tich vung cam va phan giam sat duoc
         self.session = None                 # thong so cua phien do dang chay
@@ -284,7 +294,10 @@ class MainWindow(QtWidgets.QMainWindow):
         h.addWidget(bt_learn); h.addWidget(self.sp_learn); h.addWidget(QtWidgets.QLabel("vòng")); h.addWidget(self.ck_bg)
         f.addRow(h)
         bt_loadbg = QtWidgets.QPushButton("Nạp nền đã lưu"); bt_loadbg.clicked.connect(self.load_bg)
-        f.addRow(bt_loadbg)
+        self.ck_autobg = QtWidgets.QCheckBox("Tự nạp và căn nền khi bắt đầu"); self.ck_autobg.setChecked(self.cfg["auto_bg"])
+        self.ck_autobg.setToolTip("Chế độ Trực tiếp: nếu chưa có nền thì tự nạp nền đã lưu. Sau %d vòng ổn định, app đo nền lệch bao nhiêu độ "
+                                  "và tự xoay nền nếu lệch dưới %.0f°; lệch nhiều hoặc không khớp thì báo cần học lại." % (ALIGN_REVS, ALIGN_MAX_DEG))
+        h = QtWidgets.QHBoxLayout(); h.addWidget(bt_loadbg); h.addWidget(self.ck_autobg); f.addRow(h)
         self.sp_margin = dspin(0.02, 2, 0.05, self.cfg["margin"])
         self.sp_size = dspin(0.0, 5, 0.05, self.cfg["min_size"])
         self.sp_on = ispin(1, 50, 1, self.cfg["on_revs"])
@@ -322,7 +335,10 @@ class MainWindow(QtWidgets.QMainWindow):
         heads = ["Đối tượng", "Xuất hiện", "Vào vùng", "Ra / mất", "Trong vùng (s)", "Tốc độ vào (m/s)", "Tốc độ TB (m/s)",
                  "Tốc độ lớn nhất (m/s)", "Rộng (m)", "Điểm cuối (x, y)", "Số lần mất", "Trạng thái"]
         self.tb_entry = QtWidgets.QTableWidget(0, len(heads)); self.tb_entry.setHorizontalHeaderLabels(heads)
-        self.tb_entry.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        # khong dung ResizeToContents: Qt tinh lai do rong moi lan dat o -> O(dong^2); log 16:09 co 121 luot thi moi lan cap nhat mat 3,5 s,
+        # app chiem 93 % CPU, luong doc cong COM bi bo doi, moc 0 do tre toi 43 s. Chi resizeColumnsToContents khi doi so dong.
+        self.tb_entry.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
+        self._ent_t = -1e9
         self.tb_entry.horizontalHeader().setStretchLastSection(True); self.tb_entry.verticalHeader().hide()
         self.tb_entry.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.tb_entry.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -485,7 +501,7 @@ class MainWindow(QtWidgets.QMainWindow):
     # ------------------------------------------------------------ chay / dung
     def toggle_run(self):
         if self.src:
-            self.tracker.close_open(); self._drain_entries(); self._update_entries()
+            self.tracker.close_open(); self._drain_entries(); self._update_entries(force=True)
             self._end_session()
             self.src.stop(); self.src = None
             self.lb_ov.hide()
@@ -503,16 +519,22 @@ class MainWindow(QtWidgets.QMainWindow):
             self.alog = detect.AlarmLog(os.path.join(self.src.logdir, name))
             self.tlog = detect.TrackLog(os.path.join(self.src.logdir, name.replace("alarm", "tracks")))
             self.elog = detect.EntryLog(os.path.join(self.src.logdir, name.replace("alarm", "luot_vao")))
-            self.tracker.reset(); self.gate.reset()
+            self.tracker.reset(); self.gate.reset(); self.sync_ok_prev = True; self.n_rot_bad = 0; self.rot_hist = []
             self.last_logdir, self.last_tag = self.src.logdir, "_replay" if isinstance(self.src, core.ReplaySource) else ""
             self.t_start = self.src.now()
             self.wall_off = None if isinstance(self.src, core.ReplaySource) else time.time() - self.src.now()
-            self.sel_mark.setData([], []); self.sel_text.setText(""); self._update_entries()
+            self.sel_mark.setData([], []); self.sel_text.setText(""); self._update_entries(force=True)
             self._read_ui()
             replay = isinstance(self.src, core.ReplaySource)            # phat lai khong ghi de thong so cua lan do that
             self.session = core.SessionLog(os.path.join(self.src.logdir, "session_replay.json" if replay else "session.json"),
                                            self.cfg, "Phát lại" if replay else "Trực tiếp", code_version())
             bg = self.det.bg
+            if not replay and self.ck_autobg.isChecked() and bg.learning_left == 0:
+                if not bg.ready() and os.path.exists(BG_FILE):
+                    self.load_bg(auto=True)
+                elif bg.ready():                             # nen con trong bo nho tu lan chay truoc: LiDAR co the da bi cham
+                    self.align = []
+                    self.det.events.append((time.time(), "INFO", "Kiểm tra lại nền đang dùng trong %d vòng đầu" % ALIGN_REVS))
             self.session.d["nen_luc_bat_dau"] = dict(co_nen=bg.ready(), vong_s=None if bg.rps is None else round(bg.rps, 3),
                                                      hoc_luc=None if bg.t_learn is None else time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(bg.t_learn)))
             self._refresh_zone_info()
@@ -584,7 +606,41 @@ class MainWindow(QtWidgets.QMainWindow):
             xy = core.to_xy(sc, **self._xy_params())
             bg = self.det.bg
             bg_period = 1.0 / bg.rps if bg.ready() and bg.rps and bg.learning_left == 0 else None
-            if self.gate.update(sc.period, bg_period):
+            age, delay, held = self.mapper.sync_state()
+            sync_ok = age <= SYNC_MAX_AGE
+            if sync_ok != self.sync_ok_prev:
+                self.session.note("dong_bo_moc_kem" if not sync_ok else "dong_bo_moc_lai", self.src.now() - self.t_start,
+                                  khong_co_moc_dung_gio_s=round(age, 1), tre_nhan_moc_s=round(delay, 3))
+                self.sync_ok_prev = sync_ok
+            rot, go = None, False
+            if self.align is not None and bg.ready() and bg.learning_left == 0:
+                # dang can nen da luu: chi do lech, chua phat hien
+                if self.gate.update(sc.period, bg_period, sync_ok) and len(xy["r"]) and self.mapper.n_idx >= ALIGN_WAIT_IDX:
+                    rr = bg.rotation(xy["ang"], xy["r"], max_deg=2 * ALIGN_MAX_DEG)
+                    if rr:
+                        self.align.append(rr)
+                    if len(self.align) >= ALIGN_REVS:
+                        self._finish_align(sc)
+                self.gate.ok = False
+            else:
+                rr = None
+                if self.det.use_bg and bg.ready() and bg.learning_left == 0 and len(xy["r"]):
+                    rr = bg.rotation(xy["ang"], xy["r"])
+                    rot = rr[0] if rr else None
+                go = self.gate.update(sc.period, bg_period, sync_ok, rot)
+                if self.gate.steady and rr:
+                    self.rot_hist = (self.rot_hist + [rr])[-ALIGN_REVS:]
+                    if self.gate.rot is not None:
+                        self.n_rot_bad += 1
+                        h = np.array(self.rot_hist)
+                        # lech DEU qua nhieu vong (khac lech thoang qua do du lieu tre): gia LiDAR bi xoay -> can lai hoac bao hoc lai
+                        if len(h) == ALIGN_REVS and np.all(np.abs(h[:, 0]) > self.gate.rot_max) and np.std(h[:, 0]) <= ALIGN_MAX_SPREAD:
+                            self.align = list(self.rot_hist); self.rot_hist = []
+                            self.det.events.append((time.time(), "INFO", "Vòng quét lệch đều %.1f° trong %d vòng: LiDAR có thể bị xoay" % (float(np.median(h[:, 0])), ALIGN_REVS)))
+                            self._finish_align(sc, ly_do="lech_deu_khi_chay")
+                elif not self.gate.steady:
+                    self.rot_hist = []
+            if go:
                 was_learning = self.det.bg.learning_left > 0
                 self.det.hold = self.tracker.hold_active(self.det.zone)
                 objs, fg, newly = self.det.step(xy)
@@ -730,11 +786,20 @@ class MainWindow(QtWidgets.QMainWindow):
         T = float(np.median(P)) if len(P) else 1.0
         if m.t_last_idx is None or now - m.t_last_idx > 3 * T + 1:
             warn.append("Không nhận được mốc 0°")
-        if m.n_idx >= 2 and not self.gate.ok:
+        age, delay, held = m.sync_state()
+        if m.n_idx >= 2 and self.gate.sync_bad:
+            warn.append("Mốc 0° về máy tính bị trễ, dồn cục (%.0f s chưa có mốc nào đúng giờ, mốc mới nhất trễ %.1f s): "
+                        "góc có thể lệch nên không phát hiện vật. Cắm UNO thẳng vào cổng USB trên máy, không qua hub, rồi mở lại" % (age, delay))
+        elif m.n_idx >= 2 and self.gate.rot is not None:
+            warn.append("Vòng quét lệch %.1f° so với nền (đã bỏ %d vòng): dữ liệu về trễ hoặc giá LiDAR bị xoay. "
+                        "Không phát hiện vật ở các vòng này; nếu lệch đều %d vòng app sẽ tự căn lại nền" % (self.gate.rot, self.n_rot_bad, ALIGN_REVS))
+        elif m.n_idx >= 2 and not self.gate.ok and (self.align is None or self.gate.bg_mismatch):
             warn.append("Chu kỳ quay đo được khác lúc học nền: không phát hiện vật. Kiểm tra máy tính có bị quá tải không, hoặc học lại nền nếu đã đổi tốc độ" if self.gate.bg_mismatch
                         else "Chờ tốc độ quay ổn định: chưa phát hiện vật")
         if self.det.bg.learning_left > 0:
             warn.append("Đang học nền: còn %d vòng" % self.det.bg.learning_left)
+        if self.align is not None and self.det.bg.ready():
+            warn.append("Đang kiểm tra nền đã lưu: %d/%d vòng, chưa phát hiện vật" % (len(self.align), ALIGN_REVS))
         if not (isinstance(s, core.ReplaySource) and s.finished):
             self.lb_warn.setText("\n".join(warn))
         if len(self.det.zone) < 3:
@@ -780,7 +845,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for tr in self.tracker.tracks:
             tr.entry = None                             # doi tuong con trong vung se duoc tinh thanh luot moi
         self.sel_mark.setData([], []); self.sel_text.setText("")
-        self._update_entries()
+        self._update_entries(force=True)
 
     def _clock(self, t):
         """Truc tiep: gio he thong. Phat lai: thoi gian tinh tu luc bat dau phat."""
@@ -788,7 +853,11 @@ class MainWindow(QtWidgets.QMainWindow):
             return time.strftime("%H:%M:%S", time.localtime(t + self.wall_off))
         return self._fmt_time(max(t - self.t_start, 0))
 
-    def _update_entries(self):
+    def _update_entries(self, force=False):
+        now = time.perf_counter()
+        if not force and now - self._ent_t < 0.5:          # toi da 2 lan/s
+            return
+        self._ent_t = now
         es = self.tracker.entries
         lost_now = {id(tr.entry) for tr in self.tracker.lost_in_zone()}
         inside = sum(e["t_out"] is None for e in es)
@@ -796,23 +865,37 @@ class MainWindow(QtWidgets.QMainWindow):
                               % (len(es), len({e["id"] for e in es}), inside, len(lost_now)))
         self.entry_view = list(reversed(es[-200:]))     # luot moi nhat o tren
         v = lambda x: "-" if x is None else "%.2f" % x
-        self.tb_entry.setRowCount(len(self.entry_view))
-        for row, e in enumerate(self.entry_view):
-            end = e["t_out"] if e["t_out"] is not None else e["t_last"]
-            if id(e) in lost_now:
-                state = "Đang mất tín hiệu"
-            elif e["t_out"] is None:
-                state = "Đang ở trong vùng"
-            else:
-                state = e["note"]
-            cells = ("#%d" % e["id"], self._clock(e["t0"]), self._clock(e["t_in"]), self._clock(e["t_out"]) if e["t_out"] is not None else "-",
-                     "%.1f" % (end - e["t_in"]), v(e["v_in"]), v(e["v_sum"] / e["v_n"] if e["v_n"] else None), v(e["v_max"] if e["v_n"] else None),
-                     "%.2f" % e["size"], "(%.2f, %.2f)" % (e["x_last"], e["y_last"]), str(e["n_lost"]), state)
-            for col, txt in enumerate(cells):
-                it = QtWidgets.QTableWidgetItem(txt)
-                if state in ("Đang mất tín hiệu", "Mất tín hiệu", "Hết giờ giữ"):
-                    it.setForeground(QtGui.QColor("#c25e00"))
-                self.tb_entry.setItem(row, col, it)
+        tb = self.tb_entry
+        tb.setUpdatesEnabled(False)
+        try:
+            new_rows = tb.rowCount() != len(self.entry_view)
+            if new_rows:
+                tb.setRowCount(len(self.entry_view))
+            for row, e in enumerate(self.entry_view):
+                end = e["t_out"] if e["t_out"] is not None else e["t_last"]
+                if id(e) in lost_now:
+                    state = "Đang mất tín hiệu"
+                elif e["t_out"] is None:
+                    state = "Đang ở trong vùng"
+                else:
+                    state = e["note"]
+                cells = ("#%d" % e["id"], self._clock(e["t0"]), self._clock(e["t_in"]), self._clock(e["t_out"]) if e["t_out"] is not None else "-",
+                         "%.1f" % (end - e["t_in"]), v(e["v_in"]), v(e["v_sum"] / e["v_n"] if e["v_n"] else None), v(e["v_max"] if e["v_n"] else None),
+                         "%.2f" % e["size"], "(%.2f, %.2f)" % (e["x_last"], e["y_last"]), str(e["n_lost"]), state)
+                warn = state in ("Đang mất tín hiệu", "Mất tín hiệu", "Hết giờ giữ")
+                for col, txt in enumerate(cells):
+                    it = tb.item(row, col)
+                    if it is None:
+                        it = QtWidgets.QTableWidgetItem(txt); it.setData(QtCore.Qt.UserRole, None); tb.setItem(row, col, it)
+                    elif it.text() != txt:                # chi doi o thay doi, khong tao lai o
+                        it.setText(txt)
+                    if it.data(QtCore.Qt.UserRole) != warn:
+                        it.setForeground(QtGui.QColor("#c25e00") if warn else tb.palette().text().color())
+                        it.setData(QtCore.Qt.UserRole, warn)
+        finally:
+            tb.setUpdatesEnabled(True)
+        if new_rows:
+            tb.resizeColumnsToContents()
 
     def _on_entry_click(self, row, _col):
         if 0 <= row < len(self.entry_view):
@@ -874,8 +957,39 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_zone_info()
 
     def learn_bg(self):
+        self.align = None
         self.det.bg.start_learning(self.sp_learn.value())
         self._refresh_zone_info()
+
+    def _finish_align(self, sc, ly_do="bat_dau"):
+        """Sau ALIGN_REVS vong: xoay nen da luu cho khop, hoac bo nen va bao hoc lai."""
+        a = np.array(self.align); self.align = None
+        rot, err, spread = float(np.median(a[:, 0])), float(np.median(a[:, 1])), float(np.std(a[:, 0]))
+        bg = self.det.bg
+        ok = abs(rot) <= ALIGN_MAX_DEG and err <= ALIGN_MAX_ERR and spread <= ALIGN_MAX_SPREAD
+        if ok:
+            k = int(round(rot / bg.bin_deg)) if abs(rot) >= ALIGN_MIN_DEG else 0
+            if k:
+                bg.bg = np.roll(bg.bg, -k)                 # rotation(): roll(vong, k) khop nen -> nen moi = roll(nen, -k)
+                if isinstance(self.src, core.LiveSource):
+                    self._save_bg(sc)
+            msg = "Nền đã lưu khớp: lệch %.1f°%s, sai số %.0f cm" % (rot, " (đã xoay nền theo)" if k else "", err * 100)
+        else:
+            bg.bg = None                                   # khong dung nen sai: thay "CHUA HOC NEN" thay vi bao gia
+            if abs(rot) >= 2 * ALIGN_MAX_DEG - 0.5:          # cham bien vung tim
+                why = "lệch từ %.0f° trở lên" % (2 * ALIGN_MAX_DEG)
+            elif abs(rot) > ALIGN_MAX_DEG:
+                why = "lệch %.1f° (quá %.0f°)" % (rot, ALIGN_MAX_DEG)
+            elif err > ALIGN_MAX_ERR:
+                why = "sai số %.1f cm (quá %.1f cm)" % (err * 100, ALIGN_MAX_ERR * 100)
+            else:
+                why = "các vòng cho độ lệch khác nhau (%.1f°)" % spread
+            msg = "Nền đã lưu không khớp: %s. LiDAR có thể đã bị dời, bấm Học nền" % why
+        self.det.events.append((time.time(), "INFO", msg))
+        self._refresh_zone_info()
+        if self.session:
+            self.session.note("can_nen", self.src.now() - self.t_start, ly_do=ly_do, khop=ok, lech_do=round(rot, 2),
+                              sai_so_m=round(err, 3), do_phan_tan_do=round(spread, 2), so_vong=len(a))
 
     def _save_bg(self, sc):
         try:
@@ -884,29 +998,36 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             self.det.events.append((time.time(), "INFO", "Không lưu được nền: %s" % e))
 
-    def load_bg(self):
+    def load_bg(self, auto=False):
         try:
             data = detect.Background.read(BG_FILE)
         except Exception as e:
-            QtWidgets.QMessageBox.warning(self, "Nền", "Không đọc được nền đã lưu: %s" % e)
+            if auto:
+                self.det.events.append((time.time(), "INFO", "Không đọc được nền đã lưu: %s" % e))
+            else:
+                QtWidgets.QMessageBox.warning(self, "Nền", "Không đọc được nền đã lưu: %s" % e)
             return
         P = self.mapper.periods() if self.src else []
         rps = 1.0 / float(np.median(P)) if len(P) else self.sp_rps.value()
-        if abs(rps - data["rps"]) > 0.05 * data["rps"] and QtWidgets.QMessageBox.question(
+        if not auto and abs(rps - data["rps"]) > 0.05 * data["rps"] and QtWidgets.QMessageBox.question(
                 self, "Nền", "Nền học ở %.2f vòng/s, hiện là %.2f vòng/s. Mốc 0° dịch theo tốc độ nên nền có thể lệch góc. Vẫn nạp?"
                 % (data["rps"], rps)) != QtWidgets.QMessageBox.Yes:
             return
         try:
             self.det.bg.apply(data, self.sp_r0.value())
         except ValueError as e:
-            QtWidgets.QMessageBox.warning(self, "Nền", str(e))
+            if auto:
+                self.det.events.append((time.time(), "INFO", str(e)))
+            else:
+                QtWidgets.QMessageBox.warning(self, "Nền", str(e))
             return
-        self.det.events.append((time.time(), "INFO", "Đã nạp nền học lúc %s, chỉ đúng nếu LiDAR chưa bị dời"
-                                % time.strftime("%H:%M %d/%m", time.localtime(data["t"]))))
+        self.det.events.append((time.time(), "INFO", "Đã %snạp nền học lúc %s, đang kiểm tra %d vòng đầu" % (
+            "tự " if auto else "", time.strftime("%H:%M %d/%m", time.localtime(data["t"])), ALIGN_REVS)))
+        self.align = []
         self._refresh_zone_info()
         if self.session:
             self.session.note("nap_nen",self.src.now() - self.t_start, hoc_luc=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(data["t"])),
-                              vong_s=round(data["rps"], 3))
+                              vong_s=round(data["rps"], 3), tu_dong=auto)
 
     def _apply_detect_params(self, *_):
         self.det.margin = self.sp_margin.value(); self.det.min_size = self.sp_size.value()
@@ -943,6 +1064,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.session:
             self._save_timer.stop()
             self._save_settings()                       # ghi not thay doi trong nua giay cuoi
+            self.session.d["so_vong_bo_do_lech_goc"] = self.n_rot_bad
             self.session.end()
             self.session = None
 
@@ -955,7 +1077,8 @@ class MainWindow(QtWidgets.QMainWindow):
                         min_size=self.sp_size.value(), on_revs=self.sp_on.value(), learn_revs=self.sp_learn.value(),
                         replay_dir=self.le_dir.text(), replay_speed=float(self.cb_speed.currentText()),
                         lock_cal=self.ck_lock.isChecked(), merge_d=self.sp_mg_d.value(), merge_dv=self.sp_mg_dv.value(),
-                        hold_s=self.sp_hold.value(), beep_mode=self.cb_beep.currentText(), area_max=self.sp_area_max.value())
+                        hold_s=self.sp_hold.value(), beep_mode=self.cb_beep.currentText(), area_max=self.sp_area_max.value(),
+                        auto_bg=self.ck_autobg.isChecked())
 
     def _save_settings(self):
         old = dict(self.cfg)

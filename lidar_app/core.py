@@ -125,23 +125,96 @@ def tf03_set_baud(port, baud, new_baud):
 
 
 # ------------------------------------------------------------------ dong bo dong ho
-class ClockSync:
-    """t_PC = a + b*remote + tre (tre >= 0). b: hoi quy; a: bien duoi trong cua so gan nhat."""
+def lower_line(R, L):
+    """Duong thang nam duoi moi diem (R, L) va sat chung nhat: canh bao loi duoi chua R trung binh
+    (bai toan LP uoc luong lech dong ho cua Moon, Skelly, Towsley 1999). Tre truyen chi lam L lon them,
+    nen goi tin ve tre, ke ca ve don cuc vai giay, khong keo lech duong nay mien la con vai goi ve dung gio.
+    Tra ve (a, b) voi L ~ a + b*R."""
+    o = np.lexsort((L, R))                          # theo R, cung R thi L nho truoc
+    R, L = R[o], L[o]
+    h, last = [], None                              # bao loi duoi (monotone chain)
+    for p in zip(R.tolist(), L.tolist()):
+        if p[0] == last:                            # cung R: chi giu diem thap nhat
+            continue
+        last = p[0]
+        while len(h) >= 2 and (h[-1][0] - h[-2][0]) * (p[1] - h[-2][1]) - (h[-1][1] - h[-2][1]) * (p[0] - h[-2][0]) <= 0:
+            h.pop()
+        h.append(p)
+    if len(h) < 2:
+        b = 1.0
+    else:
+        m = float(R.mean())
+        k = next((i for i in range(len(h) - 1) if h[i + 1][0] >= m), len(h) - 2)
+        b = (h[k + 1][1] - h[k][1]) / (h[k + 1][0] - h[k][0])
+    return float(np.min(L - b * R)), float(b)
 
-    def __init__(self, n=400, every=10):         # every: cap nhat a, b sau moi bay nhieu mau
+
+class ClockSync:
+    """t_PC = a + b*remote + tre (tre >= 0).
+    Mac dinh (max_age = 0): b hoi quy, a bien duoi trong cua so n mau gan nhat (hull=True: ca a, b theo bien duoi).
+    max_age > 0 (dung cho moc 0 do, it mau nhung chinh xac): tach hai phan
+      - b (do troi dong ho, doi rat cham): hoi quy chi tren cac mau ve dung gio (tre < ontime) trong cua so dai n_long,
+        chi cap nhat khi moc dang ve tot (>= 80 % mau gan day dung gio). Hoi quy tren cua so ngan khi moc thua mau dung gio
+        lam b lech ~1e-3, ban do xoay ~0,7 do/s (log 06/11 11:44).
+      - a: bien duoi trong cua so ngan n; neu max_age giay (dong ho nguon) khong co mau dung gio thi giu a cu,
+        toi da hold_max giay."""
+
+    def __init__(self, n=400, every=10, max_age=0.0, ontime=0.04, hold_max=120.0, n_long=1500, hull=False):
         self.r, self.l = collections.deque(maxlen=n), collections.deque(maxlen=n)
         self.base = self.a = self.b = None; self.every = every
         self.cnt = 0
+        self.max_age, self.ontime, self.hold_max, self.hull = max_age, ontime, hold_max, hull
+        self.lr, self.ll, self.lok = (collections.deque(maxlen=n_long) for _ in range(3))
+        self.recent_ok = collections.deque(maxlen=25)
+        self.b_long = False        # b da lay tu cua so dai
+        self.age = 0.0             # tuoi (s nguon) cua mau ve dung gio gan nhat
+        self.delay = 0.0           # tre cua mau moi nhat so voi mo hinh (s)
+        self.held = 0.0            # da giu a cu bao lau (s nguon)
+        self.t_ontime = None
 
     def add(self, remote, local):
         if self.base is None:
             self.base = remote
-        self.r.append(remote - self.base); self.l.append(local); self.cnt += 1
-        if len(self.r) >= 5 and (self.b is None or self.cnt % self.every == 0):
-            R, L = np.array(self.r), np.array(self.l)
-            if np.ptp(R) > 0:
+        x = remote - self.base
+        self.r.append(x); self.l.append(local); self.cnt += 1
+        if self.max_age <= 0:
+            if len(self.r) >= 5 and (self.b is None or self.cnt % self.every == 0):
+                R, L = np.array(self.r), np.array(self.l)
+                if np.ptp(R) > 0:
+                    if self.hull and len(R) >= 10:
+                        self.a, self.b = lower_line(R, L)
+                    else:
+                        self.b = float(np.polyfit(R, L, 1)[0])
+                        self.a = float(np.min(L - self.b * R))
+            return
+        # ---- che do moc 0 do
+        ok = True
+        if self.b is not None:
+            self.delay = local - (self.a + self.b * x)
+            ok = self.delay < self.ontime
+            if ok:
+                self.t_ontime = x
+            self.age = x - (self.t_ontime if self.t_ontime is not None else self.r[0])
+        self.lr.append(x); self.ll.append(local); self.lok.append(ok); self.recent_ok.append(ok)
+        if len(self.r) < 5:
+            return
+        R, L = np.array(self.r), np.array(self.l)
+        if np.ptp(R) <= 0:
+            return
+        # b: cua so dai, chi mau dung gio, chi khi moc dang ve tot
+        if self.b is None or (self.cnt % 25 == 0 and np.mean(self.recent_ok) >= 0.8) or not self.b_long:
+            m = np.array(self.lok)
+            LR, LL = np.array(self.lr)[m], np.array(self.ll)[m]
+            if len(LR) >= 50 and np.ptp(LR) >= 60.0:
+                self.b = float(np.polyfit(LR, LL, 1)[0]); self.b_long = True
+            elif not self.b_long:                          # luc dau: hoi quy cua so ngan nhu cu
                 self.b = float(np.polyfit(R, L, 1)[0])
-                self.a = float(np.min(L - self.b * R))
+        # a: bien duoi cua so ngan; giu nguyen neu lau khong co moc dung gio
+        if self.a is not None and self.age > self.max_age and self.held < self.hold_max:
+            self.held = self.age - self.max_age
+            return
+        self.held = 0.0
+        self.a = float(np.min(L - self.b * R))
 
     def ready(self):
         return self.b is not None
@@ -165,9 +238,20 @@ class Scan:
 
 class Mapper:
     def __init__(self):
-        self.frames = collections.deque()      # (n, dist, strength)
+        self.frames = collections.deque()      # (n, dist, strength, t_khung theo dong ho PC)
+        # Thoi diem tung khung: "arrival" = thoi diem PC nhan goi chua no, lui 1 chu ky khung cho moi khung dung sau no trong goi
+        # (PC dung lai thi cac khung don lai van duoc dat ve dung cho). "model" = duong thang theo so thu tu khung (ban cu).
+        # Log 06/11 14:48: PC nhan goi deu (3,5 ms, p99 4,7 ms) nhung TF03 xuat khung khong deu, nen "model" sai theo tung luc:
+        # vong lech > 3 do: model 76/5962, arrival 11/5963.
+        self.frame_time = "arrival"
+        self.late_thr = 0.015                  # s: goi ve tre hon mo hinh qua muc nay (PC dang khung) thi dung mo hinh
+        self.n_late = 0                        # so khung da phai dung mo hinh
+        self.t_last_ft = None                  # thoi diem khung moi nhat
         self.idx = []                          # moc 0 do theo dong ho nguon
-        self.cf, self.ci = ClockSync(400), ClockSync(60, every=1)   # moc thua (vai moc/s) nen cap nhat moi moc
+        # moc thua (vai moc/s) nen cap nhat moi moc; cua so 300 moc (~2 phut o 2,5 vong/s).
+        # Log 06/11 11:44: tu phut 16 PC nhan moc don cuc 4 dong moi ~1,7 s (tre toi 4 s) trong khi UNO van deu 0,400 s;
+        # khop theo thoi diem nhan lam ban do xoay hang tram do. Bien duoi + giu mo hinh cu khi lau khong co moc dung gio.
+        self.cf, self.ci = ClockSync(400, hull=True), ClockSync(300, every=1, max_age=10.0, hold_max=600.0)
         self.done_key = None                   # moc dau cua vong da xu ly gan nhat
         self.seq = 0
         self.lock = threading.Lock()
@@ -180,10 +264,23 @@ class Mapper:
         if not items:
             return
         with self.lock:
-            self.frames.extend(items)
-            self.n_frames += len(items); self.t_last_frame = t_arr
             self.cf.add(items[-1][0], t_arr)
-            self.last_n = items[-1][0]
+            nl = items[-1][0]
+            if self.frame_time == "arrival":
+                b = self.cf.b if self.cf.ready() and 1e-5 < self.cf.b < 0.1 else 0.001     # s / khung
+                lo = self.t_last_ft if self.t_last_ft is not None else -math.inf
+                late = self.cf.ready() and len(self.cf.r) >= 10 and t_arr - self.cf.to_local(nl) > self.late_thr
+                for it in items:
+                    tt = self.cf.to_local(it[0]) if late else t_arr - (nl - it[0]) * b
+                    tt = max(tt, lo)                                                       # khong lui qua khung truoc
+                    self.frames.append((it[0], it[1], it[2], tt))
+                if late:
+                    self.n_late += len(items)
+                self.t_last_ft = t_arr
+            else:
+                self.frames.extend(items)
+            self.n_frames += len(items); self.t_last_frame = t_arr
+            self.last_n = nl
 
     def add_index(self, remote, t_arr):
         with self.lock:
@@ -191,6 +288,11 @@ class Mapper:
             self.ci.add(remote, t_arr)
             if len(self.idx) > 60:
                 self.idx = self.idx[-60:]
+
+    def sync_state(self):
+        """(tuoi moc dung gio gan nhat s, tre nhan moc moi nhat s, dang giu mo hinh cu)."""
+        with self.lock:
+            return self.ci.age, self.ci.delay, self.ci.held > 0
 
     def periods(self):
         with self.lock:
@@ -205,7 +307,12 @@ class Mapper:
             if len(self.idx) < 3 or not (self.cf.ready() and self.ci.ready()):
                 return out
             I = self.ci.to_local(self.idx)
-            tf = self.cf.to_local
+            if self.frame_time == "arrival":
+                tf1 = lambda f: f[3]
+                t_end = self.t_last_ft
+            else:
+                tf1 = lambda f: self.cf.to_local(f[0])
+                t_end = self.cf.to_local(self.last_n)
             for j in range(len(self.idx) - 1):
                 key = self.idx[j]
                 if self.done_key is not None and key <= self.done_key:
@@ -214,20 +321,19 @@ class Mapper:
                     self.done_key = key
                     continue
                 i0, i1 = I[j], I[j + 1]
-                if tf(self.last_n) < i1:         # khung cuoi vong chua ve het -> cho lan goi sau
+                if t_end < i1:                   # khung cuoi vong chua ve het -> cho lan goi sau
                     break
                 d = np.diff(I[max(0, j - 5):j + 2])
                 T = float(np.median(d))
-                while self.frames and tf(self.frames[0][0]) < i0:
+                while self.frames and tf1(self.frames[0]) < i0:
                     self.frames.popleft()
                 rev = []
-                while self.frames and tf(self.frames[0][0]) < i1:
+                while self.frames and tf1(self.frames[0]) < i1:
                     rev.append(self.frames.popleft())
                 self.done_key = key
                 if not rev:
                     continue
-                n = np.array([f[0] for f in rev], float)
-                ang = 360.0 * (tf(n) - i0) / T
+                ang = 360.0 * (np.array([tf1(f) for f in rev], float) - i0) / T
                 self.seq += 1
                 out.append(Scan(self.seq, float(i0), T, ang,
                                 np.array([f[1] for f in rev], float),
