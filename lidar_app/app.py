@@ -401,7 +401,7 @@ class MainWindow(QtWidgets.QMainWindow):
         bg = self.det.bg
         if bg.ready():
             ang = (np.arange(bg.nb) + 0.5) * bg.bin_deg
-            res = core.measure_area([(ang, bg.bg)] * 10, max_r=self.sp_area_max.value(), bin_deg=bg.bin_deg)
+            res = core.measure_area([(ang, bg.bg - self.sp_r0.value())] * 10, max_r=self.sp_area_max.value(), bin_deg=bg.bin_deg)   # nen theo d_m
             if res is not None:
                 return res["ang"], res["r"]
         return None
@@ -616,7 +616,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.align is not None and bg.ready() and bg.learning_left == 0:
                 # dang can nen da luu: chi do lech, chua phat hien
                 if self.gate.update(sc.period, bg_period, sync_ok) and len(xy["r"]) and self.mapper.n_idx >= ALIGN_WAIT_IDX:
-                    rr = bg.rotation(xy["ang"], xy["r"], max_deg=2 * ALIGN_MAX_DEG)
+                    rr = bg.rotation(xy["ang"], xy["d_m"], max_deg=2 * ALIGN_MAX_DEG)
                     if rr:
                         self.align.append(rr)
                     if len(self.align) >= ALIGN_REVS:
@@ -625,7 +625,7 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 rr = None
                 if self.det.use_bg and bg.ready() and bg.learning_left == 0 and len(xy["r"]):
-                    rr = bg.rotation(xy["ang"], xy["r"])
+                    rr = bg.rotation(xy["ang"], xy["d_m"])
                     rot = rr[0] if rr else None
                 go = self.gate.update(sc.period, bg_period, sync_ok, rot)
                 if self.gate.steady and rr:
@@ -682,7 +682,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _redraw_recent(self, *_):
         p = self._xy_params()
-        self.recent = [(sc, dict(core.to_xy(sc, **p), fg=np.zeros(0, bool), objs=[], stable=v.get("stable", True))) for sc, v in self.recent]
+        new_rec = []
+        for sc, v in self.recent:                       # phan loai lai theo vung/thong so moi (ban sua 09/11)
+            xy = core.to_xy(sc, **p)
+            objs, fg = self.det.classify(xy) if v.get("stable", True) else ([], np.zeros(len(xy["x"]), bool))
+            xy["fg"], xy["objs"], xy["stable"] = fg, objs, v.get("stable", True)
+            new_rec.append((sc, xy))
+        self.recent = new_rec
         self._draw()
 
     def _draw(self):
@@ -934,7 +940,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if len(self.draft) >= 3:
                 self.det.zone = list(self.draft)
                 self._mark_dirty()
-            self.draft = []; self.draft_item.setData([], []); self._draw_zone()
+            self.draft = []; self.draft_item.setData([], []); self._draw_zone(); self._redraw_recent()
 
     def on_click(self, ev):
         if not self.drawing or ev.button() != QtCore.Qt.LeftButton:
@@ -945,7 +951,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.draft_item.setData(xs, ys)
 
     def clear_zone(self):
-        self.det.zone = []; self._draw_zone(); self._mark_dirty()
+        self.det.zone = []; self._draw_zone(); self._mark_dirty(); self._redraw_recent()
 
     def _draw_zone(self):
         z = self.det.zone
@@ -1034,6 +1040,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.det.on_revs = self.sp_on.value(); self.det.use_bg = self.ck_bg.isChecked()
         self.tracker.merge_d, self.tracker.merge_dv = self.sp_mg_d.value(), self.sp_mg_dv.value()
         self.tracker.hold_s = self.sp_hold.value()
+        self._redraw_recent()
 
     # ------------------------------------------------------------ luu
     def _outdir(self, sub):
@@ -1048,7 +1055,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _snapshot(self):
         if self.recent:
-            fn = os.path.join(self._outdir("su_kien"), time.strftime("baodong_%H%M%S.png"))
+            fn = os.path.join(self._outdir("su_kien"), "%s_vong%d.png" % (time.strftime("baodong_%H%M%S"), self.recent[-1][0].seq))
             self.plot.grab().save(fn)
 
     def save_csv(self):

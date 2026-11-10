@@ -21,3 +21,4 @@ Thumbs.db
 desktop.ini
 # Ngoai le: log quan trong copy vao data/ thi DUOC dua len kho (de lam o nha bang phat lai)
 !data/log_*/
+cad/san_pham/*.b64.txt

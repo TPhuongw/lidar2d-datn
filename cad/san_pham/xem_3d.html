@@ -1,0 +1,326 @@
+<title>LiDAR đường ngang v2</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap">
+<style>
+/* Bo cuc: cong cu mot man hinh - khung 3D ben trai, bang dieu khien ben phai (dien thoai: xep doc) */
+:root{
+  --bg:#eef1f4; --panel:#f8fafb; --fg:#17202a; --muted:#5b6876; --line:#d5dbe1;
+  --accent:#d6402b; --accent-soft:#d6402b22; --sel:#1f6fd1; --stage:#e3e8ed;
+  --f-ui:"Be Vietnam Pro",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"Roboto Mono",ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#12171d; --panel:#181f27; --fg:#e4e9ee; --muted:#95a2b0; --line:#2a3440;
+  --accent:#ff6a52; --accent-soft:#ff6a5229; --sel:#5aa2ff; --stage:#0e1318; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#12171d; --panel:#181f27; --fg:#e4e9ee; --muted:#95a2b0; --line:#2a3440;
+  --accent:#ff6a52; --accent-soft:#ff6a5229; --sel:#5aa2ff; --stage:#0e1318; color-scheme:dark}
+html,body{height:100%}
+body{background:var(--bg);color:var(--fg);font-family:var(--f-ui);font-size:14px;line-height:1.5}
+.app{display:grid;grid-template-columns:minmax(0,1fr) 360px;height:100%}
+.stage{position:relative;background:var(--stage);min-height:0}
+#c{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
+.hud{position:absolute;left:max(16px,env(safe-area-inset-left,0px));bottom:14px;font:12px/1.4 var(--f-mono);color:var(--muted);pointer-events:none}
+.load{position:absolute;inset:0;display:grid;place-items:center;font:13px var(--f-mono);color:var(--muted)}
+aside{background:var(--panel);border-left:1px solid var(--line);overflow-y:auto;min-width:0;
+  padding-block:18px 24px;padding-left:max(18px,env(safe-area-inset-left,0px));padding-right:max(18px,env(safe-area-inset-right,0px));
+  display:flex;flex-direction:column;gap:18px}
+.eyebrow{font:500 11px var(--f-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+h1{font-size:20px;font-weight:700;margin:2px 0 4px;text-wrap:balance;line-height:1.25}
+.sub{color:var(--muted);font-size:13px;margin:0}
+h2{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+.ctl{display:flex;flex-direction:column;gap:10px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.row label{cursor:pointer}
+input[type=range]{width:100%;accent-color:var(--accent)}
+input[type=checkbox]{accent-color:var(--accent);width:16px;height:16px;cursor:pointer}
+.parts{display:flex;flex-direction:column;gap:2px;margin:0;padding:0;list-style:none}
+.parts button{all:unset;box-sizing:border-box;width:100%;display:grid;grid-template-columns:12px 1fr auto;gap:10px;align-items:center;
+  padding:7px 8px;border-radius:6px;cursor:pointer}
+.parts button:hover{background:var(--accent-soft)}
+.parts button:focus-visible{outline:2px solid var(--sel);outline-offset:1px}
+.parts button[aria-pressed="true"]{background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent)}
+.sw{width:12px;height:12px;border-radius:3px;border:1px solid #0003}
+.parts small{font:11px var(--f-mono);color:var(--muted)}
+.info{border:1px solid var(--line);border-radius:8px;padding:12px 14px;background:var(--bg)}
+.info h3{margin:0 0 4px;font-size:15px}
+.info p{margin:0 0 6px;color:var(--fg)}
+.info dl{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;margin:6px 0 0;font:12px/1.5 var(--f-mono)}
+.info dt{color:var(--muted)}
+.info dd{margin:0}
+.notes{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;color:var(--fg)}
+.tag{font:500 10.5px var(--f-mono);padding:1px 6px;border-radius:4px;background:var(--accent-soft);color:var(--accent);white-space:nowrap}
+.btns{display:flex;gap:8px;flex-wrap:wrap}
+.btns button{font:500 12px var(--f-ui);color:var(--fg);background:transparent;border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}
+.btns button:hover{border-color:var(--accent)}
+.btns button:focus-visible{outline:2px solid var(--sel)}
+aside>*{flex-shrink:0}
+.seg{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{all:unset;box-sizing:border-box;padding:8px 10px;cursor:pointer;font-size:12.5px;line-height:1.35;text-align:left}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button b{display:block;font-size:13px}
+.seg button span{color:var(--muted)}
+.seg button[aria-checked="true"]{background:var(--accent-soft);box-shadow:inset 0 -2px 0 var(--accent)}
+.seg button:focus-visible{outline:2px solid var(--sel);outline-offset:-2px}
+@media (max-width:820px){
+  .app{grid-template-columns:1fr;grid-template-rows:58vh auto;height:auto}
+  aside{border-left:0;border-top:1px solid var(--line);overflow:visible}
+}
+</style>
+
+<div class="app">
+  <div class="stage">
+    <canvas id="c" aria-label="Mô hình 3D khối LiDAR 2D, kéo để xoay"></canvas>
+    <div class="load" id="load">Đang tải mô hình…</div>
+    <div class="hud" id="hud">kéo: xoay · cuộn: thu phóng · chuột phải: dời · bấm vào chi tiết để xem</div>
+  </div>
+  <aside>
+    <div>
+      <div class="eyebrow">Mô hình ý tưởng · khối LiDAR</div>
+      <h1>LiDAR 2D quét 360° từ TF03</h1>
+      <p class="sub" id="sub"></p>
+    </div>
+
+    <section class="ctl" aria-label="Điều khiển">
+      <h2>Xem</h2>
+      <div>
+        <div class="row"><label for="ex">Tách rời các phần</label><span class="tag" id="exv">0 %</span></div>
+        <input id="ex" type="range" min="0" max="100" value="0">
+      </div>
+      <div class="row"><label for="cut">Cắt đôi để nhìn bên trong</label><input id="cut" type="checkbox"></div>
+      <div class="row"><label for="scan">Mặt quét laser (minh họa)</label><input id="scan" type="checkbox" checked></div>
+      <div class="row"><label for="blind">Vùng mù do gân dây</label><input id="blind" type="checkbox" checked></div>
+      <div class="row"><label for="spin">Gương quay</label><input id="spin" type="checkbox" checked></div>
+      <div class="btns"><button id="reset" type="button">Góc nhìn ban đầu</button><button id="clear" type="button">Bỏ chọn</button></div>
+    </section>
+
+    <section>
+      <h2>Các khối</h2>
+      <ul class="parts" id="parts"></ul>
+    </section>
+
+    <section class="info" id="info" aria-live="polite"></section>
+
+    <section>
+      <h2>Ý tưởng chính</h2>
+      <ul class="notes" id="notes"></ul>
+    </section>
+  </aside>
+</div>
+
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+"three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+
+// ---- du lieu mo hinh (lidar_v4.py) ----
+const BLIND_DEG = 17.4;   // 2*atan((4 + 15)/2 / 62): gan 4 mm, chum 15 mm (gia dinh), ban kinh 62 mm
+const LENS_Z = 205;      // mat kinh TF03
+const V = { v4: {
+  file:"lidar_v4.glb.b64.txt",
+  sub:"TF03 ở trên chiếu xuống, gương 45° quay thẳng trên trục động cơ ở dưới. Đế chứa bo mạch, động cơ, đầu nối nguồn và mạng. Thân Ø150 mm, cao 265 mm, mặt quét ở 145 mm. Kích thước tự đặt, chưa phải bản vẽ chế tạo.",
+  map:{"vo_de":"vo","tam_gan_day":"vo","m12_nguon_24v":"ket_noi","m12_nguon_24v_vach":"ket_noi","m12_ethernet":"ket_noi","m12_ethernet_vach":"ket_noi","van_tho":"ket_noi","pcb_chinh":"pcb","stm32f4":"pcb","thach_anh":"pcb","w5500_ethernet":"pcb","bien_ap_ethernet":"pcb","drv_foc":"pcb","mosfet_1":"pcb","mosfet_2":"pcb","mosfet_3":"pcb","buck_5v_ic":"pcb","cuon_cam_5v":"pcb","ldo_3v3":"pcb","cau_chi_24v":"pcb","tvs_24v":"pcb","diode_nguoc_cuc":"pcb","cau_dau_24v":"pcb","jst_tf03_4p":"pcb","jst_dongco_3p":"pcb","jst_encoder_6p":"pcb","jst_ethernet":"pcb","swd":"pcb","relay_1":"pcb","relay_2":"pcb","relay_3":"pcb","cau_dau_relay":"pcb","tu_0":"pcb","tu_1":"pcb","tu_2":"pcb","tu_3":"pcb","led_0":"pcb","led_1":"pcb","led_2":"pcb","tam_do_dong_co":"dong_co","tru_do_0":"dong_co","tru_do_1":"dong_co","tru_do_2":"dong_co","tru_do_3":"dong_co","stator_de":"dong_co","rotor_dong_co":"dong_co","nam_cham_truc":"dong_co","encoder_as5048a":"dong_co","chip_as5048a":"dong_co","tru_enc_0":"dong_co","tru_enc_1":"dong_co","tru_enc_2":"dong_co","coc_guong":"phan_quay","guong_45":"phan_quay","ong_cua_so":"cua_so","gan_luon_day":"cua_so","nap":"nap","tam_day_nap":"nap","tf03":"tf03","thau_kinh_0":"tf03","thau_kinh_1":"tf03","gia_tf03_-1":"tf03","gia_tf03_1":"tf03","day_tf03_0":"day_dien","day_tf03_1":"day_dien","day_tf03_2":"day_dien","day_tf03_3":"day_dien","day_dong_co_0":"day_dien","day_dong_co_1":"day_dien","day_dong_co_2":"day_dien","day_encoder_0":"day_dien","day_encoder_1":"day_dien","day_encoder_2":"day_dien","day_encoder_3":"day_dien","day_encoder_4":"day_dien","day_encoder_5":"day_dien","day_nguon_24v_0":"day_dien","day_nguon_24v_1":"day_dien","day_ethernet_0":"day_dien","day_ethernet_1":"day_dien","day_ethernet_2":"day_dien","day_ethernet_3":"day_dien"},
+  rot:["coc_guong","guong_45","rotor_dong_co","nam_cham_truc"],
+  view:{target:[0,120,0], pos:[560,380,700]},
+  G:{
+    nap:{t:"Nắp", sw:"#8f969f", ex:[0,0,230], d:"Vỏ nhôm chứa TF03. Tấm đáy nắp có lỗ Ø40 cho tia đi xuống gương; vành che nắng che mép trên ống cửa sổ.", dl:[["Kích thước","Ø150 × 75 mm"],["Tấm đáy","lỗ Ø40 + khe cho gân dây"]]},
+    tf03:{t:"TF03 chiếu xuống", sw:"#202024", ex:[0,0,170], d:"TF03 treo dưới nắp bằng hai tấm nhôm, hai thấu kính hướng xuống, cách tâm gương 60 mm.", dl:[["Khối","44 × 31.8 × 42.9 mm (giả định)"],["Mặt kính","z = 205 mm"],["Dây","đỏ VCC · đen GND · nâu TX · xanh dương RX"]]},
+    cua_so:{t:"Ống cửa sổ + gân luồn dây", sw:"#9cc4ef", ex:[0,0,110], d:"Ống trong suốt cho tia quét đi qua. Gân mỏng phía sau (4 mm theo phương tiếp tuyến) chứa 4 dây TF03 đi xuống đế; gân này cắt mặt quét nên tạo một cung mù.", dl:[["Ống","Ø140 × 3 × 70 mm"],["Gân","4 × 10 mm, tại x = −62 mm"],["Vùng mù","≈ 17.4° (chùm 15 mm, giả định)"]]},
+    phan_quay:{t:"Cốc gương 45°", sw:"#c3c6cb", ex:[0,0,60], d:"Cốc nhôm bắt thẳng lên rotor động cơ, mang gương elip 45°. Tia từ TF03 đi xuống, gặp gương, ra nằm ngang và quay cùng gương (tỉ lệ 1:1).", dl:[["Gương","elip 62 × 44 mm"],["Tâm gương","z = 145 mm"]]},
+    dong_co:{t:"Động cơ + encoder", sw:"#2b2d31", ex:[0,0,0], d:"BLDC dẹt Ø40 × 18 mm truyền thẳng vào cốc gương. Nam châm ở đầu dưới trục, chip AS5048A ngay bên dưới đọc góc tuyệt đối. Tấm đỡ nhôm đứng trên 4 trụ. Bản đồ án dùng động cơ bước NEMA17 cũng vừa đế Ø150.", dl:[["Động cơ","Ø40 × 18 mm, dạng gimbal"],["Encoder","AS5048A, 14 bit (theo datasheet)"],["Tấm đỡ","z = 88 mm"]]},
+    day_dien:{t:"Dây nối", sw:"#d9412e", ex:[-230,0,30], d:"TF03: 4 dây qua gân xuống JST 4 chân. Động cơ: 3 pha. Encoder: 6 sợi. Nguồn 24 V: đỏ/đen từ đầu M12 tới cầu đấu. Ethernet: 4 sợi từ đầu M12 tới JST.", dl:[["TF03","4 dây, ~170 mm"],["Nguồn","2 dây, tiết diện lớn hơn"],["Mạng","4 sợi (100BASE-TX)"]]},
+    pcb:{t:"Bo mạch chính", sw:"#11663a", ex:[0,0,-110], d:"Bo tròn Ø138 mm. Nguồn: 24 V → cầu chì, diode chống ngược cực, TVS → buck 5 V (TF03) → LDO 3,3 V (STM32). STM32F4 + thạch anh; W5500 + biến áp Ethernet; driver FOC + 3 MOSFET; 3 relay báo động ra cầu đấu; SWD; LED trạng thái.", dl:[["Vào","24 V, Ethernet"],["Ra","5 V cho TF03, 3 pha động cơ, 3 relay"],["Đầu nối","JST: TF03 4p, động cơ 3p, encoder 6p, mạng"]]},
+    ket_noi:{t:"Nguồn & kết nối", sw:"#c8cbd0", ex:[-120,0,-200], d:"Mặt sau đế: đầu M12 nguồn 24 V (vạch đỏ), đầu M12 Ethernet (vạch xanh), van thở chống đọng sương. Nguồn 24 V cấp từ adapter hoặc tủ điện bên ngoài.", dl:[["Nguồn","24 V DC, M12"],["Mạng","Ethernet, M12"],["Mục tiêu","IP65"]]},
+    vo:{t:"Vỏ đế + tấm gắn", sw:"#8d949c", ex:[0,0,-200], d:"Vỏ nhôm kín Ø150 × 110 mm. Tấm gắn đáy 190 × 120 mm, 4 lỗ M8 để bắt lên giá hoặc đỉnh cột.", dl:[["Vỏ","Ø150 × 110 mm"],["Tấm gắn","190 × 120 × 6 mm"]]}
+  },
+  notes:[
+    "<b>TF03 ở trên, gương và động cơ ở dưới</b> như bản đồ án: truyền thẳng, không đai; encoder trên trục đọc trực tiếp góc gương.",
+    "<b>Đổi lại:</b> dây TF03 phải cắt qua mặt quét. Dây đi trong một gân mỏng phía sau, tạo vùng mù khoảng 17.4° (giả định chùm 15 mm). Xoay gân về hướng không cần giám sát và lọc cung này trong phần mềm.",
+    "<b>Nguồn:</b> 24 V vào qua M12 → bảo vệ → buck 5 V cho TF03 → LDO 3,3 V cho vi điều khiển; động cơ lấy từ 24 V qua driver FOC.",
+    "<span class=\"tag\">chưa kiểm chứng</span> kích thước thật của TF03, độ truyền qua 905 nm và phản xạ ngược của ống cửa sổ, bề rộng chùm tại gân, tản nhiệt trong vỏ kín."]
+}};
+const ORDER = ["nap","tf03","cua_so","phan_quay","dong_co","day_dien","pcb","ket_noi","vo"];
+let cur = "v4", G = V.v4.G;
+
+const canvas = document.getElementById("c");
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true, preserveDrawingBuffer:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.localClippingEnabled = true;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+const scene = new THREE.Scene();
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
+const cam = new THREE.PerspectiveCamera(35, 1, 5, 20000);
+const controls = new OrbitControls(cam, canvas);
+controls.enableDamping = true;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 0.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.4); sun.position.set(400, 900, 600); scene.add(sun);
+
+// mo hinh dung he z-len cua CadQuery: boc trong 1 nhom quay -90 do quanh X
+const model = new THREE.Group(); model.rotation.x = -Math.PI/2; scene.add(model);
+const groups = {}; for (const k of ORDER){ groups[k] = new THREE.Group(); model.add(groups[k]); }
+const rotor = new THREE.Group(); groups.phan_quay.add(rotor);
+const clip = new THREE.Plane(new THREE.Vector3(0,0,-1), 1e6);  // cat bo nua phia nguoi xem (y mo hinh < 0)
+let meshes = [];
+
+function themeColor(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+function applyTheme(){ scene.background = new THREE.Color(themeColor("--stage")); scanMat.color.set(themeColor("--accent")); beamMat.color.set(themeColor("--accent")); }
+
+// mat quet + tia (minh hoa)
+const SCAN_Z = 145;
+const scanMat = new THREE.MeshBasicMaterial({transparent:true, opacity:0.07, side:THREE.DoubleSide, depthWrite:false});
+const scan = new THREE.Mesh(new THREE.RingGeometry(70, 650, 128), scanMat); scan.position.z = SCAN_Z; model.add(scan);
+const beamMat = new THREE.MeshBasicMaterial({transparent:true, opacity:0.85});
+const beam = new THREE.Mesh(new THREE.CylinderGeometry(1.6,1.6,900,8), beamMat);
+beam.rotation.z = -Math.PI/2; beam.position.set(450,0,0);
+const beamUp = new THREE.Mesh(new THREE.CylinderGeometry(1.6,1.6,LENS_Z-SCAN_Z,8), beamMat);
+beamUp.rotation.x = Math.PI/2; beamUp.position.set(0,0,(SCAN_Z+LENS_Z)/2);
+const beamPivot = new THREE.Group(); beamPivot.position.z = SCAN_Z; beamPivot.add(beam);
+model.add(beamPivot); model.add(beamUp);
+const blindMat = new THREE.MeshBasicMaterial({color:0x222831, transparent:true, opacity:0.35, side:THREE.DoubleSide, depthWrite:false});
+const blind = new THREE.Mesh(new THREE.RingGeometry(70, 650, 24, 1, Math.PI - BLIND_DEG*Math.PI/360, BLIND_DEG*Math.PI/180), blindMat);
+blind.position.z = SCAN_Z + 0.5; model.add(blind);
+
+// ---- tai mo hinh (GLB dang base64 trong file .txt) ----
+const loader = new GLTFLoader();
+const cache = {};
+function loadVariant(v){
+  const L = document.getElementById("load"); L.hidden = false; L.textContent = "Đang tải mô hình…";
+  const p = cache[v] || (cache[v] = fetch(V[v].file)
+    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+    .then(b64 => new Promise((ok, no) => {
+      const bin = Uint8Array.from(atob(b64.trim()), c => c.charCodeAt(0));
+      loader.parse(bin.buffer, "", ok, no);
+    })));
+  p.then(gltf => { if (v === cur) build(gltf, v); })
+   .catch(e => { delete cache[v]; L.textContent = "Không tải được mô hình: " + (e && e.message || e); });
+}
+function build(gltf, v){
+  const D = V[v], MAP = D.map, ROT = new Set(D.rot);
+  for (const k of ORDER) for (const c of [...groups[k].children]) if (c !== rotor) groups[k].remove(c);
+  for (const c of [...rotor.children]) rotor.remove(c);
+  meshes = [];
+  const fix = new THREE.Matrix4().makeRotationX(Math.PI/2);   // gltf y-len -> z-len
+  gltf.scene.updateMatrixWorld(true);
+  gltf.scene.traverse(o => {
+    if (!o.isMesh) return;
+    const name = MAP[o.name] ? o.name : (o.parent && MAP[o.parent.name] ? o.parent.name : o.name);
+    const key = MAP[name] || (name.startsWith("day_") ? "day_dien" : "vo");
+    const m = new THREE.MeshStandardMaterial({color:o.material.color.clone(), metalness:0.25, roughness:0.55, clippingPlanes:[clip], side:THREE.DoubleSide});
+    if (name === "ong_cua_so"){ m.transparent = true; m.opacity = 0.22; m.depthWrite = false; m.metalness = 0; m.roughness = 0.05; }
+    if (name === "guong_45"){ m.metalness = 1; m.roughness = 0.04; m.color.set(0xf2f4f7); }
+    if (/^(m12|tru_|cau_chi|tu_|thach_anh)/.test(name)){ m.metalness = 0.8; m.roughness = 0.3; }
+    m.userData.baseOpacity = m.opacity; m.userData.baseTransparent = m.transparent;
+    const g = new THREE.Mesh(o.geometry, m); g.name = name; g.userData.key = key;
+    g.applyMatrix4(o.matrixWorld); g.applyMatrix4(fix);
+    (ROT.has(name) ? rotor : groups[key]).add(g);
+    meshes.push(g);
+  });
+  document.getElementById("load").hidden = true;
+  applyExplode(); applyPole(); buildList(); select(null); resetView();
+}
+
+function resetView(){
+  const w = V[cur].view;
+  controls.target.set(...w.target); cam.position.set(...w.pos); controls.update();
+}
+
+// ---- danh sach khoi + chon ----
+let selected = null;
+function buildList(){
+  const ul = document.getElementById("parts"); ul.innerHTML = "";
+  for (const k of ORDER){
+    const n = new Set(meshes.filter(m => m.userData.key === k).map(m => m.name)).size;
+    const li = document.createElement("li");
+    li.innerHTML = `<button type="button" data-k="${k}" aria-pressed="false"><span class="sw" style="background:${G[k].sw}"></span><span>${G[k].t}</span><small>${n} chi tiết</small></button>`;
+    li.firstChild.addEventListener("click", () => select(selected === k ? null : k));
+    ul.appendChild(li);
+  }
+}
+function select(k){
+  selected = k;
+  document.querySelectorAll(".parts button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.k === k)));
+  for (const m of meshes){
+    const mat = m.material, on = !k || m.userData.key === k;
+    mat.transparent = on ? mat.userData.baseTransparent : true;
+    mat.opacity = on ? mat.userData.baseOpacity : Math.min(0.12, mat.userData.baseOpacity);
+    mat.depthWrite = on && !mat.userData.baseTransparent;
+    mat.emissive.set(on && k ? 0x0a1a33 : 0x000000);
+    mat.needsUpdate = true;
+  }
+  const info = document.getElementById("info");
+  if (!k){
+    info.innerHTML = `<h3>Chọn một khối</h3><p>Bấm vào tên khối ở trên hoặc bấm trực tiếp vào mô hình để xem chức năng và kích thước.</p>`;
+    return;
+  }
+  const g = G[k];
+  info.innerHTML = `<h3>${g.t}</h3><p>${g.d}</p><dl>${g.dl.map(([a,b]) => `<dt>${a}</dt><dd>${b}</dd>`).join("")}</dl>`;
+}
+
+// bam vao mo hinh
+const ray = new THREE.Raycaster(), ptr = new THREE.Vector2(); let down = null;
+canvas.addEventListener("pointerdown", e => { down = [e.clientX, e.clientY]; });
+canvas.addEventListener("pointerup", e => {
+  if (!down || Math.hypot(e.clientX-down[0], e.clientY-down[1]) > 5) return;
+  const r = canvas.getBoundingClientRect();
+  ptr.set((e.clientX-r.left)/r.width*2-1, -(e.clientY-r.top)/r.height*2+1);
+  ray.setFromCamera(ptr, cam);
+  const hits = ray.intersectObjects(meshes.filter(m => m.visible && (m.material.opacity > 0.5 || m.name === "ong_cua_so")), false)
+    .filter(h => !cutOn || h.point.z <= 0.5);
+  select(hits.length ? hits[0].object.userData.key : null);
+});
+
+// ---- dieu khien ----
+const ex = document.getElementById("ex"), exv = document.getElementById("exv");
+const scanChk = document.getElementById("scan"), spinChk = document.getElementById("spin"), blindChk = document.getElementById("blind");
+function applyExplode(){
+  const t = ex.value/100; exv.textContent = ex.value + " %";
+  for (const k of ORDER){ const v = G[k].ex; groups[k].position.set(v[0]*t, v[1]*t, v[2]*t); }
+  scan.position.z = SCAN_Z + G.phan_quay.ex[2]*t; beamPivot.position.z = scan.position.z; blind.position.z = scan.position.z + 0.5;
+  beamUp.visible = t < 0.02 && scanChk.checked;
+}
+function applyPole(){ blind.visible = blindChk.checked; }
+ex.addEventListener("input", applyExplode);
+let cutOn = false;
+document.getElementById("cut").addEventListener("change", e => { cutOn = e.target.checked; clip.constant = cutOn ? 0 : 1e6; });
+scanChk.addEventListener("change", () => { scan.visible = beamPivot.visible = scanChk.checked; beamUp.visible = scanChk.checked && ex.value == 0; });
+blindChk.addEventListener("change", applyPole);
+document.getElementById("reset").addEventListener("click", resetView);
+document.getElementById("clear").addEventListener("click", () => select(null));
+
+function setVariant(v){
+  cur = v; G = V[v].G;
+    document.getElementById("sub").textContent = V[v].sub;
+  document.getElementById("notes").innerHTML = V[v].notes.map(n => `<li>${n}</li>`).join("");
+  selected = null;
+  loadVariant(v);
+}
+
+const mq = matchMedia("(prefers-color-scheme: dark)");
+mq.addEventListener?.("change", applyTheme);
+new MutationObserver(applyTheme).observe(document.documentElement, {attributes:true, attributeFilter:["data-theme"]});
+if (matchMedia("(prefers-reduced-motion: reduce)").matches) spinChk.checked = false;
+
+function resize(){
+  const w = canvas.clientWidth, h = canvas.clientHeight, pr = renderer.getPixelRatio();
+  if (canvas.width !== Math.floor(w*pr) || canvas.height !== Math.floor(h*pr)){
+    renderer.setSize(w, h, false); cam.aspect = w/h; cam.updateProjectionMatrix();
+  }
+}
+applyTheme();
+setVariant("v4");
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  resize();
+  const dt = clock.getDelta();
+  if (spinChk.checked){ const a = dt * Math.PI * 2 * 0.5; rotor.rotation.z += a; beamPivot.rotation.z += a; }   // 0.5 vong/s de de nhin
+  controls.update();
+  renderer.render(scene, cam);
+});
+</script>

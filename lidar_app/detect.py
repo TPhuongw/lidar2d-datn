@@ -153,8 +153,9 @@ class Background:
                 bg = np.nanmedian(S, axis=0)
             valid = np.sum(~np.isnan(S), axis=0) >= max(2, len(S) // 3)
             self.bg = np.where(valid, bg, np.inf)
-            # lap lo trong giua cac o co nen: lay min hai ben (tranh bao gia o mep vat)
-            self.bg = np.minimum(self.bg, np.minimum(np.roll(self.bg, 1), np.roll(self.bg, -1)))
+            # lap lo trong va chong bao gia o mep vat khi goc dao dong ~1 do: lay min trong lan can +-2 o
+            for k in (1, 2):
+                self.bg = np.minimum(self.bg, np.minimum(np.roll(self.bg, k), np.roll(self.bg, -k)))
             self.t_learn = time.time()
             return True
         return False
@@ -165,19 +166,21 @@ class Background:
     def save(self, path, rps, r0):
         tmp = path + ".tmp"
         with open(tmp, "wb") as f:
-            np.savez(f, bg=self.bg, bin_deg=self.bin_deg, rps=rps, r0=r0, t=time.time())
+            np.savez(f, bg=self.bg, bin_deg=self.bin_deg, rps=rps, r0=r0, t=time.time(), tho=1)   # tho=1: nen theo khoang cach tho d_m
         os.replace(tmp, path)                           # app chet giua chung khong lam hong file cu
 
     @staticmethod
     def read(path):
         with np.load(path) as d:
-            return dict(bg=d["bg"], bin_deg=float(d["bin_deg"]), rps=float(d["rps"]), r0=float(d["r0"]), t=float(d["t"]))
+            return dict(bg=d["bg"], bin_deg=float(d["bin_deg"]), rps=float(d["rps"]), r0=float(d["r0"]), t=float(d["t"]),
+                        tho="tho" in d.files)
 
     def apply(self, data, r0_now):
-        """Dung nen da doc. Nen luu khoang cach da tru r0 nen phai bu neu r0 da doi."""
+        """Dung nen da doc. Nen moi luu theo khoang cach tho d_m (khong phu thuoc r0); file cu luu r = d_m - r0 thi cong lai r0 luc do.
+        r0_now giu de tuong thich, khong con dung."""
         if data["bin_deg"] != self.bin_deg or len(data["bg"]) != self.nb:
             raise ValueError("File nền không đúng độ phân giải góc.")
-        self.bg, self.samples, self.learning_left = data["bg"] + data["r0"] - r0_now, [], 0
+        self.bg, self.samples, self.learning_left = data["bg"] + (0.0 if data.get("tho") else data["r0"]), [], 0
         self.t_learn, self.rps = data["t"], data["rps"]
 
     def rotation(self, ang_deg, r, max_deg=60.0, min_frac=0.3):
@@ -250,29 +253,41 @@ class Detector:
         self.all_objs = []              # cum khac nen tren toan phong (ca ngoai vung cam), de theo doi
         self.hold = False               # True: con vat co the dang khuat duoi mat quet, chua duoc het bao dong
 
+    def classify(self, xy):
+        """Tinh (objs, mask_fg) cho xy ma khong thay doi bo dem bao dong."""
+        x, y, ang = xy["x"], xy["y"], xy["ang"]
+        d_m = xy.get("d_m", xy["r"])
+        if self.bg.learning_left > 0 or (self.use_bg and not self.bg.ready()):
+            return [], np.zeros(len(x), bool)
+        fg = self.bg.foreground(ang, d_m, self.margin) if self.use_bg else np.ones(len(x), bool)
+        if len(self.zone) >= 3:
+            fg &= point_in_polygon(x, y, self.zone)
+        else:
+            fg &= False                                  # chua co vung cam -> khong bao dong
+        objs = cluster(ang[fg], x[fg], y[fg], self.gap, self.min_pts, self.min_size)
+        return objs, fg
+
     def step(self, xy):
         """xy: dict tu core.to_xy. Tra ve (objs, mask_fg, alarm_moi_bat)."""
-        x, y, r, ang = xy["x"], xy["y"], xy["r"], xy["ang"]
+        x, y, ang = xy["x"], xy["y"], xy["ang"]
+        d_m = xy.get("d_m", xy["r"])
         self.all_objs = []
         if self.bg.learning_left > 0:
-            done = self.bg.feed(ang, r)
+            done = self.bg.feed(ang, d_m)
             if done:
                 self.events.append((time.time(), "INFO", "Học nền xong"))
             return [], np.zeros(len(x), bool), False
         if self.use_bg and not self.bg.ready():          # chua hoc nen -> khong phan biet duoc tuong voi vat
             self.alarm, self._on, self._off = False, 0, 0
             return [], np.zeros(len(x), bool), False
-        fg = self.bg.foreground(ang, r, self.margin) if self.use_bg else np.ones(len(x), bool)
         if self.use_bg:                                  # khong co nen thi tuong cung la cum, khong theo doi duoc
-            self.all_objs = cluster(ang[fg], x[fg], y[fg], self.gap, self.min_pts, self.min_size)
+            fa = self.bg.foreground(ang, d_m, self.margin)
+            self.all_objs = cluster(ang[fa], x[fa], y[fa], self.gap, self.min_pts, self.min_size)
+            r0 = float(np.median(d_m - xy["r"])) if len(x) else 0.0      # nen tinh theo khoang cach tho d_m = r + r0
             for o in self.all_objs:
                 b = (o.ang / self.bg.bin_deg).astype(int) % self.bg.nb
-                o.gap = float(np.median(self.bg.bg[b] - np.hypot(o.xs, o.ys)))
-        if len(self.zone) >= 3:
-            fg &= point_in_polygon(x, y, self.zone)
-        else:
-            fg &= False                                  # chua co vung cam -> khong bao dong
-        objs = cluster(ang[fg], x[fg], y[fg], self.gap, self.min_pts, self.min_size)
+                o.gap = float(np.median(self.bg.bg[b] - (np.hypot(o.xs, o.ys) + r0)))
+        objs, fg = self.classify(xy)
         newly = False
         if objs:
             self._on += 1; self._off = 0

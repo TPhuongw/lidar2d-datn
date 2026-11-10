@@ -1,6 +1,6 @@
 # CLAUDE.md: Đồ án LiDAR 2D từ LiDAR 1D (TF03)
 
-Tài liệu ngữ cảnh cho Claude Code. Cập nhật lần cuối: 04/11/2026.
+Tài liệu ngữ cảnh cho Claude Code. Cập nhật lần cuối: 06/11/2026 (chiều).
 Người làm: Phương, sinh viên năm cuối Điện tử – Viễn thông, thực tập tại công ty LiDAR.
 Luôn trả lời bằng tiếng Việt. Thuật ngữ chuyên ngành giữ tiếng Anh kèm giải thích. Không khen xã giao. Có chính kiến; khi có nhiều phương án thì nêu rõ nên chọn cái nào.
 
@@ -13,12 +13,16 @@ Ký hiệu trong file: **[ĐÃ CHỐT]** quyết định đã xác nhận · **[
 - Ứng dụng: **giám sát vật cản tại đường ngang đường sắt** (xe chết máy, người đi vào khi tàu sắp tới).
 - Sản phẩm cuối cần: phần cứng chạy thật, firmware, phần mềm PC (bản đồ 2D + vùng cấm + báo động), số liệu đánh giá sai số, báo cáo tốt nghiệp.
 - Mở rộng theo yêu cầu: **ghép 2–4 LiDAR đồng bộ** thành bản đồ chung. Cụ thể yêu cầu đồng bộ gì vẫn chờ xác nhận (xem mục 7).
+- **Hai mục tiêu:** đồ án tốt nghiệp (bản mẫu chứng minh nguyên lý, PoC) **và** hướng thương mại hóa (phiên bản 2). Bản đồ án không cố đạt chuẩn thương mại, nhưng ưu tiên quyết định dùng tiếp được: gói dữ liệu, firmware chia lớp (phần cứng / giao thức / vận chuyển), thuật toán phát hiện.
+  - Phần **tạm cho bản đồ án**, bản thương mại phải thay: gương SICK tháo máy (không mua lại được), động cơ bước 42CME06 + CL42C (dự kiến thay BLDC + encoder), Nucleo (thay bo tự thiết kế dùng chip STM32).
+  - Chờ hỏi leader: quyền sở hữu trí tuệ và mức công bố báo cáo; bộ yêu cầu kỹ thuật có số (tầm, vật nhỏ nhất, thời gian báo động, tỉ lệ báo giả, môi trường).
+- **Hướng phát triển sau đồ án (KHÔNG làm trong đồ án):** tích hợp bên thứ ba, ví dụ LiDAR phát hiện → camera PTZ quay tới xác nhận (slew-to-cue). Cần: theo dõi đối tượng (`track.py`), hệ tọa độ hiện trường chung, đầu ra sự kiện (`output.py`: JSON qua MQTT/HTTP, ONVIF PTZ, hoặc relay → alarm-in camera theo vùng/preset). Độ chính xác định vị hiện tại thừa đủ cho camera; yếu tố quyết định là độ trễ và ID ổn định.
 
 ## 2. Phần cứng
 
 | Khối | Linh kiện | Trạng thái / thông số chính |
 |---|---|---|
-| Cảm biến | **Benewake TF03-180** ×2 (S/N U6600386020170, firmware 1.1.24) | 5–24 V, ~150 mA @5 V; UART LVTTL 3,3 V; CAN (không dùng). Dây: đỏ VCC, đen GND, **nâu TX**, **xanh dương RX**, trắng/xanh lá CAN. Cả hai con đã lưu cấu hình **115200 baud, 1000 Hz**, 0 lỗi checksum **[ĐO THẬT]** |
+| Cảm biến | **Benewake TF03-180** ×2 (S/N U6600386020170, firmware 1.1.24) | 5–24 V, ~150 mA @5 V; UART LVTTL 3,3 V; CAN (không dùng). Dây: đỏ VCC, đen GND, **nâu TX**, **xanh dương RX**, trắng/xanh lá CAN. Cả hai con đã lưu cấu hình **115200 baud, 1000 Hz**, 0 lỗi checksum **[ĐO THẬT]**. Datasheet (Mouser) ghi 1–1000 Hz, nhưng **đã chạy thật 2000 Hz** (04/11, log trong `data/`, baud tăng theo quy tắc 112×Hz) **[ĐO THẬT]**; chưa chứng minh mỗi khung là một lần đo độc lập (xem mục 6) |
 | Gương 45° | Cụm cốc gương tháo từ máy quét SICK | Đĩa encoder **180 vạch, có 1 vạch rộng** (người dùng đếm tay) |
 | Động cơ | **Leadshine 42CME06** (NEMA17, 0,6 N·m, 2,5 A, có encoder A/B, không có kênh index) + driver **CL42C** | **[ĐÃ CHỐT]** (leader chọn). Driver: jumper tín hiệu đặt **5 V**; DIP 3200 xung/vòng (SW1 off, SW2 off, SW3 on, SW4 on); SW6 off = vòng kín; SW7 off = PUL/DIR. Lỗi nháy đỏ 7 lần = lỗi bám vị trí. Chạy vòng kín ổn định **[ĐO THẬT]** |
 | Mốc 0° | **Lá chắn thiếc trên phần quay + module cảm biến khe LM393** (3 chân VCC/GND/DO) | **[ĐÃ CHỐT]** thay cho đọc vạch rộng trên đĩa 180 vạch (kém tin cậy do rung cạnh, mất tín hiệu). OPB tháo từ SICK chỉ còn dự phòng |
@@ -79,6 +83,7 @@ Khi chạy trên breadboard với STM32: driver nối kiểu anode chung (PUL+/D
 - **Mốc 0° bằng lá chắn + LM393** (UNO, Timer1 đếm bước): ở 1–4 vòng/s, số bước mỗi vòng luôn **3200**, độ lặp lại **0 bước** (tốt hơn 0,11°). Mốc dịch theo tốc độ (so với 1 vòng/s): **9 / 17 / 24 bước** ở 2 / 3 / 4 vòng/s, khoảng 8,3 bước/(vòng/s), tương đương trễ khoảng 2,6 ms. Nguyên nhân chưa tách được: sai số bám của driver hoặc trễ phát hiện mốc. Số vòng đo mỗi tốc độ: **[CẦN BỔ SUNG]**.
 - **Đọc đĩa 180 vạch bằng OPB:** mỗi vạch bị đếm khoảng 4 lần do rung cạnh (chùm rung ≤ khoảng 160 µs). Lọc khóa 300 µs thì đếm đúng 179–180 và 540 cạnh/s. Có lúc mất tín hiệu một đoạn mỗi vòng do gá lỏng hoặc mối hàn chập chờn.
 - **Bản đồ 2D đầu tiên** (03/11, PC + UNO): tường thẳng, khoảng 990–1025 điểm/vòng ở 1 vòng/s; TF03 thực tế khoảng 1000–1025 Hz. Đối chiếu sơ đồ phòng: tủ phải khoảng 2,7 m và tường dưới khoảng 3,5 m khớp. Bản đồ cần **Xoay ≈ −40°, không đảo chiều** **[GIẢ ĐỊNH, đọc từ ảnh]**.
+- **TF03 ở 2000 Hz** (04/11, `data/log_20261104_120106` 1,5 vòng/s 371 s; `data/log_20261104_141825` 3 vòng/s 697 s): tần số khung đo được 1999,1–1999,9 Hz, mất 93/741 234 và 197/1 392 848 khung. 30–36 % cặp khung liên tiếp trùng cả dist lẫn strength (nếu độc lập thì kỳ vọng khoảng 21 %), giá trị đổi khoảng 1400 lần/s. **Chưa kết luận** TF03 đo thật 2000 lần/s hay lặp khung: cần thí nghiệm tường tĩnh so 1000/2000/5000 Hz (độ lệch chuẩn, tự tương quan trễ 1, tỉ lệ khung trùng). 5000 Hz chưa thử.
 - Phòng thử nghiệm ước lượng khoảng **3,47 × 5,37 m** (suy từ bản vẽ, **chưa đo bằng thước**). LiDAR đặt trên bàn sát tường trái (gần máy tính), cột quay về tường, mặt quét khoảng 0,91 m. Mô phỏng: thấy khoảng 90,9 % diện tích.
 
 ## 7. Quyết định kỹ thuật
@@ -95,6 +100,7 @@ Khi chạy trên breadboard với STM32: driver nối kiểu anode chung (PUL+/D
 - Thu PCB về cỡ shield Arduino (~69 × 53 mm, buck MP2459/LMR16006, cần tra datasheet); đặt PCB trên đế sát chân cột; adapter 24 V.
 - Giảm vùng mù do cột: thanh tròn mảnh đặt xa hơn (góc mù ≈ 2·atan((rộng cột + rộng chùm)/2 / khoảng cách); hiện tính ra khoảng 24,7° với chùm 15 mm **[GIẢ ĐỊNH]**); nhiều máy che vùng mù cho nhau.
 - Chừa sẵn đầu nối SPI cho module Ethernet W5500.
+- Chừa sẵn 2–4 ngõ ra GPIO qua transistor (relay báo động theo vùng / alarm-in camera về sau).
 
 **Câu hỏi đang chờ người dùng:** yêu cầu cụ thể của "kết nối 2–4 con đồng bộ"; khoảng cách giữa các máy; máy chủ (PC hay Pi); có gương cho máy thứ hai không; model của LiDAR thương mại dùng LAN; danh sách đồ Thorlabs; hạn nộp đồ án.
 

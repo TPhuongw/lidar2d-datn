@@ -248,6 +248,12 @@ class Mapper:
         self.n_late = 0                        # so khung da phai dung mo hinh
         self.t_last_ft = None                  # thoi diem khung moi nhat
         self.idx = []                          # moc 0 do theo dong ho nguon
+        self.idx_t = []                        # thoi diem PC nhan tung moc
+        # Bo vong dang ngo (theo ban sua 09/11 53fa5f1): chu ky lech > 3 % trung vi, moc ve tre > 0,1 s so voi mo hinh,
+        # hoac trong vong co khoang trong du lieu > 80 ms. Vong bi bo khong ve, khong dua vao phat hien.
+        self.skip_bad = True
+        self.n_skip = 0
+        self.skip_why = collections.Counter()  # chu_ky / moc_tre / trong_du_lieu
         # moc thua (vai moc/s) nen cap nhat moi moc; cua so 300 moc (~2 phut o 2,5 vong/s).
         # Log 06/11 11:44: tu phut 16 PC nhan moc don cuc 4 dong moi ~1,7 s (tre toi 4 s) trong khi UNO van deu 0,400 s;
         # khop theo thoi diem nhan lam ban do xoay hang tram do. Bien duoi + giu mo hinh cu khi lau khong co moc dung gio.
@@ -284,10 +290,10 @@ class Mapper:
 
     def add_index(self, remote, t_arr):
         with self.lock:
-            self.idx.append(remote); self.n_idx += 1; self.t_last_idx = t_arr
+            self.idx.append(remote); self.idx_t.append(t_arr); self.n_idx += 1; self.t_last_idx = t_arr
             self.ci.add(remote, t_arr)
             if len(self.idx) > 60:
-                self.idx = self.idx[-60:]
+                self.idx, self.idx_t = self.idx[-60:], self.idx_t[-60:]
 
     def sync_state(self):
         """(tuoi moc dung gio gan nhat s, tre nhan moc moi nhat s, dang giu mo hinh cu)."""
@@ -333,7 +339,18 @@ class Mapper:
                 self.done_key = key
                 if not rev:
                     continue
-                ang = 360.0 * (np.array([tf1(f) for f in rev], float) - i0) / T
+                ft = np.array([tf1(f) for f in rev], float)
+                why = None
+                if abs((i1 - i0) - T) > 0.03 * T:
+                    why = "chu_ky"
+                elif max(self.idx_t[j] - i0, self.idx_t[j + 1] - i1) > 0.1:
+                    why = "moc_tre"
+                elif np.max(np.diff(np.r_[i0, ft, i1])) > 0.08:
+                    why = "trong_du_lieu"
+                if self.skip_bad and why:
+                    self.n_skip += 1; self.skip_why[why] += 1
+                    continue
+                ang = 360.0 * (ft - i0) / T
                 self.seq += 1
                 out.append(Scan(self.seq, float(i0), T, ang,
                                 np.array([f[1] for f in rev], float),
@@ -346,8 +363,9 @@ def to_xy(scan, r0=0.0, offset_deg=0.0, direction=1, max_cm=3000, min_str=0):
     d, s, a = scan.dist_cm, scan.strength, scan.angle_deg
     ok = (d > 0) & (d <= max_cm) & (s >= min_str) & (a >= 0) & (a < 360)
     th = np.radians(direction * a[ok] + offset_deg)
-    r = d[ok] / 100.0 - r0
-    return dict(x=r * np.cos(th), y=r * np.sin(th), r=r, ang=a[ok], s=s[ok], ok=ok)
+    d_m = d[ok] / 100.0                     # khoang cach tho: nen hoc theo d_m nen khong phu thuoc r0 (ban sua 09/11)
+    r = d_m - r0
+    return dict(x=r * np.cos(th), y=r * np.sin(th), r=r, d_m=d_m, ang=a[ok], s=s[ok], ok=ok)
 
 
 def measure_area(revs, max_r=8.0, bin_deg=0.5, med_bins=5, min_revs=10):
@@ -443,59 +461,63 @@ class LiveSource:
 
     def _tf03(self):
         import serial
-        ser = serial.Serial(self.tf_port, self.tf_baud, timeout=0.01)
-        ser.reset_input_buffer()
-        buf, n, t_flush = bytearray(), 0, time.perf_counter()
-        while not self.stop_ev.is_set():
-            data = ser.read(max(1, ser.in_waiting))
-            if time.perf_counter() - t_flush >= 1.0:      # app chet thi chi mat toi da khoang 1 s du lieu tho
-                self.flog.flush(); t_flush = time.perf_counter()
-            if not data:
-                continue
-            t_arr = time.perf_counter()
-            buf += data
-            frames, rest, bad = parse_tf03(buf)
-            buf = bytearray(rest); self.bad_frames += bad; n += bad
-            items = []
-            for d, s in frames:
-                items.append((n, d, s)); n += 1
-            self.m.add_frames(items, t_arr)
-            for it in items:
-                self.flog.write("%d,%d,%d,%.6f\n" % (it + (t_arr,)))
-        ser.close()
+        with serial.Serial(self.tf_port, self.tf_baud, timeout=0.01) as ser:
+            ser.reset_input_buffer()
+            buf, n, t_flush = bytearray(), 0, time.perf_counter()
+            while not self.stop_ev.is_set():
+                data = ser.read(max(1, ser.in_waiting))
+                if time.perf_counter() - t_flush >= 1.0:      # app chet thi chi mat toi da khoang 1 s du lieu tho
+                    self.flog.flush(); t_flush = time.perf_counter()
+                if not data:
+                    continue
+                if ser.in_waiting:                           # hut het byte den trong luc cho GIL truoc khi lay moc thoi gian
+                    data += ser.read(ser.in_waiting)
+                t_arr = time.perf_counter()
+                buf += data
+                frames, rest, bad = parse_tf03(buf)
+                buf = bytearray(rest); self.bad_frames += bad; n += bad
+                items = []
+                for d, s in frames:
+                    items.append((n, d, s)); n += 1
+                self.m.add_frames(items, t_arr)
+                for it in items:
+                    self.flog.write("%d,%d,%d,%.6f\n" % (it + (t_arr,)))
 
     def _uno(self):
         import serial
-        ser = serial.Serial(self.uno_port, 115200, timeout=0.1)
-        self.uno = ser
-        time.sleep(2.5)
-        ser.reset_input_buffer()
-        self.set_speed(self.rps)
-        last_us, wrap = None, 0
-        while not self.stop_ev.is_set():
-            line = ser.readline()
-            if not line:
-                continue
-            t = time.perf_counter() - len(line) * 10 / 115200
-            txt = line.decode(errors="ignore").strip()
-            if txt.startswith("MOC 0"):
-                mm = re.search(r"t=(\d+)", txt)
-                if mm:
-                    us = int(mm.group(1))
-                    if last_us is not None and us < last_us:
-                        wrap += 1 << 32
-                    last_us = us
-                    remote = (us + wrap) * 1e-6
-                else:
-                    remote = t
-                self.m.add_index(remote, t)
-                self.ilog.write("%.6f,%.6f\n" % (remote, t)); self.ilog.flush()
-            elif txt:
-                self.uno_lines.append(txt)
-        try:
-            ser.write(b"r 0\n"); time.sleep(0.2)
-        finally:
-            ser.close()
+        with serial.Serial(self.uno_port, 115200, timeout=0.1) as ser:
+            self.uno = ser
+            time.sleep(2.5)
+            ser.reset_input_buffer()
+            self.set_speed(self.rps)
+            last_us, wrap = None, 0
+            try:
+                while not self.stop_ev.is_set():
+                    line = ser.readline()
+                    if not line:
+                        continue
+                    t = time.perf_counter() - len(line) * 10 / 115200
+                    txt = line.decode(errors="ignore").strip()
+                    if txt.startswith("MOC 0"):
+                        mm = re.search(r"t=(\d+)", txt)
+                        if mm:
+                            us = int(mm.group(1))
+                            if last_us is not None and us < last_us:
+                                wrap += 1 << 32
+                            last_us = us
+                            remote = (us + wrap) * 1e-6
+                        else:
+                            remote = t
+                        self.m.add_index(remote, t)
+                        self.ilog.write("%.6f,%.6f\n" % (remote, t)); self.ilog.flush()
+                    elif txt:
+                        self.uno_lines.append(txt)
+            finally:                                          # loi giua chung van dung dong co
+                self.uno = None
+                try:
+                    ser.write(b"r 0\n"); time.sleep(0.2)
+                except Exception:
+                    pass
 
     def set_speed(self, rps):
         self.rps = rps

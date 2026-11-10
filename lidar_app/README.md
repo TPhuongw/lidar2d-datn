@@ -37,7 +37,7 @@ App từ chối các tổ hợp sai điều kiện trên. Cấu hình được l
 ## Quy trình giám sát
 1. Chỉnh **r0**, **Xoay**, **Đảo chiều** cho bản đồ khớp phòng thật, rồi tích **Khóa hiệu chỉnh** để tránh đổi nhầm. Lăn chuột trên ô số chỉ cuộn bảng, không đổi giá trị. Nếu đổi Xoay hay Đảo chiều sau khi đã vẽ vùng cấm, vùng tự xoay theo và vẫn ở đúng vị trí thật so với LiDAR.
 2. **Vẽ vùng cấm**: bấm nút, bấm chuột trái lên bản đồ để thêm từng đỉnh, bấm nút lần nữa để kết thúc.
-3. **Học nền** khi vùng cấm đang trống và bản đồ đã đứng yên (mặc định 20 vòng). Nền lưu theo góc thô nên không phụ thuộc Xoay. Học xong ở chế độ Trực tiếp, nền tự lưu vào `nen.npz`; phát lại không ghi đè file này. Mở app lần sau, bấm **Nạp nền đã lưu** nếu LiDAR chưa bị dời. App hỏi lại khi tốc độ quay lệch quá 5 % so với lúc học, và tự bù nếu r0 đã đổi.
+3. **Học nền** khi vùng cấm đang trống và bản đồ đã đứng yên (mặc định 20 vòng). Nền lưu theo góc thô và khoảng cách gốc `d_m` (trước khi trừ `r0`), mở rộng cực tiểu trong lân cận ±2 ô (±1,0°), nên chỉnh `r0` hoặc Xoay sau khi học nền không gây báo động giả. Học xong ở chế độ Trực tiếp, nền tự lưu vào `nen.npz`; phát lại không ghi đè file này. Mở app lần sau, bấm **Nạp nền đã lưu** nếu LiDAR chưa bị dời. App hỏi lại khi tốc độ quay lệch quá 5 % so với lúc học. File nền cũ (lưu theo `r` đã trừ `r0`) vẫn nạp được: app cộng lại `r0` lúc lưu.
    - **Tự nạp và căn nền khi bắt đầu** (ô cạnh nút, mặc định bật, chỉ ở chế độ Trực tiếp): bấm Bắt đầu mà chưa có nền thì app tự nạp `nen.npz`; nếu nền vẫn còn trong bộ nhớ từ lần chạy trước thì kiểm tra lại nền đó. Dù nạp tự động hay bấm nút, app chờ đủ 20 mốc 0° (vì lúc đầu đồng hồ mốc chưa ổn định, góc lệch thêm 1–2°), rồi đo 10 vòng ổn định xem nền lệch bao nhiêu độ. Trong lúc này app chưa phát hiện vật.
      - Lệch dưới 10°, sai số trung vị không quá 2,5 cm, và các vòng cho độ lệch khác nhau không quá 1,5°: nền được coi là đúng chỗ. Nếu lệch từ 1° trở lên thì app xoay nền theo rồi lưu lại. Dưới 1° thì để nguyên, để không tích lũy sai số của bộ ước lượng qua các lần nạp.
      - Ngoài các điều kiện trên: app bỏ nền, hiện CHƯA HỌC NỀN và báo cần học lại.
@@ -47,7 +47,7 @@ App từ chối các tổ hợp sai điều kiện trên. Cấu hình được l
      - Thử trên phần cứng (06/11): phiên 16:50 tự nạp nền và khớp (lệch 0,5°, sai số 1 cm). Phiên 16:53, khi xoay giá: phát lại bằng code mới thì đầu phiên đo được 8,25° và xoay nền theo; lần xoay giá thứ hai lệch thêm −12,5° nên app báo học lại.
      - Ngưỡng 2,5 cm lấy từ log 14:48: nền đúng chỗ cho sai số 1,0 cm và lệch −0,25 đến −0,5° (phân tán 0,15–0,45°) suốt 30 phút; nền và vòng quét của hai log 11:44 và 14:48 cho 4–5,5 cm.
      - Đã thử bằng cổng COM giả: xoay 6° thì khớp và xoay nền theo, lần sau đo lại ra 0,0°; xoay 25° và dời 0,3 m đều bị từ chối. Chưa chạy trên phần cứng. Chưa học nền thì app hiện CHƯA HỌC NỀN và không báo động, trừ khi tắt dùng nền.
-4. Khi có vật trong vùng cấm liên tiếp *N* vòng (mặc định 3): ô trạng thái chuyển đỏ, có tiếng beep, ghi nhật ký và lưu ảnh vào `su_kien/`.
+4. Khi có vật trong vùng cấm liên tiếp *N* vòng (mặc định 3): ô trạng thái chuyển đỏ, có tiếng beep, ghi nhật ký và lưu ảnh vào `su_kien/baodong_<giờ phút giây>_vong<N>.png`.
 
 ## Thông số phiên đo và an toàn dữ liệu
 Mỗi lần bấm **Bắt đầu**, app ghi `session.json` vào thư mục log (phát lại: `session_replay.json`, ghi đè mỗi lần phát):
@@ -130,8 +130,25 @@ Giới hạn:
 | Vật nhỏ nhất (m) | Bỏ cụm điểm nhỏ hơn (nhiễu, côn trùng) |
 | Báo khi liên tiếp (vòng) | Chống báo động giả; tăng lên nếu hay báo nhầm |
 
-## Giới hạn hiện tại
+## Đồng bộ thời gian & ghép góc (`core.py`)
+Bản hiện tại là bản kết hợp sau khi merge hai bản sửa lệch góc độc lập: bản ngày 06/11 trên máy đo và bản ngày 09/11 (`53fa5f1`). Chi tiết về các lỗi dẫn tới từng bước sửa nằm ở mục "Mốc 0° về trễ, dồn cục" phía trên.
+- **Thời điểm khung TF03**: lấy theo thời điểm PC nhận gói chứa khung đó, lùi một chu kỳ khung cho mỗi khung đứng sau nó trong gói. Nếu gói về trễ hơn mô hình đường thẳng quá 15 ms thì dùng mô hình. Mô hình là biên dưới (cạnh bao lồi dưới) của 400 gói gần nhất (`ClockSync(hull=True)`).
+- **Đồng hồ mốc 0°**: độ trôi chỉ cập nhật khi mốc đang về tốt (hồi quy trên các mốc đúng giờ trong 1500 mốc gần nhất); độ lệch là biên dưới của 300 mốc gần nhất.
+- **Bỏ vòng đáng ngờ** (lấy từ bản 09/11): chu kỳ vòng lệch quá 3 % so với trung vị, mốc 0° về trễ quá 0,1 s so với mô hình, hoặc trong vòng có khoảng trống dữ liệu quá 80 ms. Vòng bị bỏ không hiện và không đưa vào phát hiện (`Mapper.n_skip`).
+- `LiveSource._tf03` đọc hết các byte đang chờ trong bộ đệm UART trước khi lấy mốc thời gian (lấy từ bản 09/11).
+- Phần chưa lấy từ bản 09/11: `ClockSync` theo trung vị độ dốc từng cặp, và việc kẹp số khung của từng gói để khử lặp khối FIFO 6 khung.
+- So sánh trên 6 log phần cứng bằng cách phát lại. Tiêu chí là tỷ lệ vòng lệch ≤ 2° so với bản đồ chuẩn của chính log đó; trong ngoặc là độ lệch lớn nhất. Thứ tự: bản 06/11 / bản 09/11 / bản kết hợp:
+  - `data/log_20261104_120106` (2000 Hz): 96,7 % (61°) / **99,8 % (4°)** / 97,6 % (4°).
+  - `data/log_20261104_141825`: 98,5 % (91°) / 99,7 % (6°) / **99,9 % (3°)**.
+  - `log_20261104_171459`: 99,1 % (42°) / 99,6 % (70°) / **100 % (1°)**.
+  - `log_20261106_144837`: 99,9–100 % (11°) / 99,5 % (106°) / **100 % (2°)**.
+  - `log_20261106_160956`, 15 phút đầu: 99,8 % (52°) / 100 % (1°) / **100 % (2°)**. Đoạn PC dồn ứ sau đó: bản 09/11 ra 343 vòng, chỉ 20 % đạt; bản kết hợp bỏ gần hết, 35 vòng còn lại 97 % đạt (3°).
+  - `log_20261106_114442`, đoạn dồn cục: bản kết hợp còn 19 vòng, 95 % đạt (12°).
+  - Giá phải trả: bỏ 0–3 % số vòng ở các phiên bình thường, và 12 % ở đoạn đầu log 11:44 vì mốc về trễ thất thường.
+  - Ở chế độ 2000 Hz, bản 09/11 vẫn tốt hơn trong khoảng lệch 2–4°. Nếu chạy 2000 Hz thì nên thử thêm phần kẹp khối FIFO vào bản kết hợp.
+
+## Giới hạn hiện tại & Kết quả kiểm chứng
 - Góc tính theo thời gian (PC + UNO), chưa phải STM32: dùng để **trình diễn**, không dùng làm số liệu đánh giá độ chính xác.
 - Chưa có: đo bằng chuột, ghép nhiều LiDAR.
 - Từng nút của mục **TF03** mới được kiểm tra đủ với TF03 giả lập, chưa kiểm tra đủ với cảm biến thật.
-- Đã chạy chế độ Trực tiếp với phần cứng thật (UNO + TF03), xem `data/log_20261104_120106`. Bản đồ có thể lệch vài độ trong khoảng 30 s đầu; bản khớp mốc mới mới được phát lại trên log này, chưa chạy lại trên phần cứng.
+- Bản 09/11 đã được kiểm chứng trên `data/log_20261104_120106` (634 vòng, 2000 Hz) và `data/log_20261104_141825` (1820 vòng, 1000 Hz): độ lệch góc mỗi vòng p50 = 1,0°, p95 = 1,0°, p99 = 2,0°. Số liệu của bản kết hợp xem mục trên.
