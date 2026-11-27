@@ -37,7 +37,7 @@ ALIGN_MAX_SPREAD = 1.5  # do: cac vong cho do lech khac nhau qua muc nay thi kho
 SYNC_MAX_AGE = 30.0   # s: qua lau khong co moc 0 do nao ve dung gio thi goc khong con tin duoc -> chan phat hien
 DEFAULTS = dict(tf_port="COM12", uno_port="COM10", tf_baud=115200, tf_hz=1000, rps=1.0, r0=0.0, offset=0.0, dir=1, maxcm=3000, minstr=0,
                 accum=1, color="cường độ", view=5.0, zone=[], margin=0.15, min_size=0.10, on_revs=3,
-                learn_revs=20, replay_dir="", replay_speed=1.0, lock_cal=False, merge_d=0.6, merge_dv=0.25, hold_s=60.0, beep_mode="Có vật trong vùng", area_max=8.0, auto_bg=True, live_mode="uno")
+                learn_revs=20, replay_dir="", replay_speed=1.0, lock_cal=False, merge_d=0.6, merge_dv=0.25, hold_s=60.0, beep_mode="Có vật trong vùng", area_max=8.0, auto_bg=True, live_mode="uno", fast_alarm=True)
 
 
 class BeepPlayer:
@@ -315,7 +315,12 @@ class MainWindow(QtWidgets.QMainWindow):
                         (self.sp_mg_d, "Gộp khi cách dưới (m), 0 = tắt"), (self.sp_mg_dv, "Gộp khi lệch tốc độ dưới (m/s)"),
                         (self.sp_hold, "Giữ vật biến mất (s), 0 = tắt")):
             f.addRow(lab, w_); w_.valueChanged.connect(self._apply_detect_params)
-        self.lb_alarm = QtWidgets.QLabel("CHƯA CÓ VÙNG CẤM"); self.lb_alarm.setAlignment(QtCore.Qt.AlignCenter)
+        self.ck_fast = QtWidgets.QCheckBox("Báo nhanh (2 vòng) khi vật rõ ràng")
+        self.ck_fast.setToolTip("Vật đủ lớn và nằm trước nền từ %.1f m trở lên trong 2 vòng liền thì báo ngay, "
+                                "không chờ đủ số vòng ở trên. Vật nhỏ hoặc sát nền vẫn chờ đủ số vòng." % detect.FAST_GAP)
+        self.ck_fast.setChecked(self.cfg["fast_alarm"]); self.ck_fast.toggled.connect(self._apply_detect_params)
+        f.addRow(self.ck_fast)
+        self.lb_alarm =QtWidgets.QLabel("CHƯA CÓ VÙNG CẤM"); self.lb_alarm.setAlignment(QtCore.Qt.AlignCenter)
         self.lb_alarm.setMinimumHeight(44); self._set_alarm_style(None)
         f.addRow(self.lb_alarm)
         self.lb_zone = QtWidgets.QLabel("Vùng cấm: chưa có"); self.lb_zone.setWordWrap(True)
@@ -677,7 +682,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     if isinstance(self.src, core.LiveSource):
                         self._save_bg(sc)               # phat lai khong ghi de nen cua phan cung
                 self.alog.on_scan(sc, objs, newly, self.det, t_ready, self.src.now())
-                self.tlog.write(sc, self.tracker.update(sc, self.det.all_objs, self.det.zone))
+                self.tlog.write(sc, self.tracker.update(sc, self.det.all_objs, self.det.zone, self.det.small_objs))
                 self._drain_tracker_events(sc)
                 self._drain_entries()
             else:                                       # dong co chua on dinh: goc sai, chi hien ban do
@@ -686,18 +691,21 @@ class MainWindow(QtWidgets.QMainWindow):
             self.last_scan = sc
             self.recent.append((sc, xy))
             self.recent = self.recent[-20:]
-            if newly:
+            if newly:                                   # bao truoc, luu anh sau (luu anh mat ~0,08 s)
+                self._update_alarm_label(); self.lb_alarm.repaint()
+                self.alog.mark_shown(self.src.now())
                 if self.cb_beep.currentText() == BEEP_OFF:
                     QtWidgets.QApplication.beep()       # con lai da co tieng keo dai
-                self._snapshot()
-                self.alog.mark_snap(self.src.now())
+                else:
+                    self._beep_tick()                   # khong cho nhip 200 ms cua bo hen gio
         if scans:
             self._draw()
             self._update_entries()
         self._update_status()
         self._update_events()
         if self.alog.row:
-            self.lb_alarm.repaint()                     # ve ngay de t_shown sat luc o chuyen do
+            self._snapshot()                            # sau khi ve: anh co ca vong quet vua bao dong
+            self.alog.mark_snap(self.src.now())
             self.alog.finish(self.src.now())
         if isinstance(self.src, core.ReplaySource) and self.src.finished and not scans:
             self.lb_warn.setText("Phát lại xong.")
@@ -834,6 +842,9 @@ class MainWindow(QtWidgets.QMainWindow):
             warn.append("Đang kiểm tra nền đã lưu: %d/%d vòng, chưa phát hiện vật" % (len(self.align), ALIGN_REVS))
         if not (isinstance(s, core.ReplaySource) and s.finished):
             self.lb_warn.setText("\n".join(warn))
+        self._update_alarm_label()
+
+    def _update_alarm_label(self):
         if len(self.det.zone) < 3:
             self.lb_alarm.setText("CHƯA CÓ VÙNG CẤM"); self._set_alarm_style(None)
         elif self.det.use_bg and not self.det.bg.ready():
@@ -858,7 +869,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if mode == BEEP_MOVE:
             active = any(tr.moving for tr in vis)
         else:
-            active = len(self.det.zone) >= 3 and any(tr.in_zone for tr in vis)   # chua co vung cam thi khong keu
+            # chua co vung cam thi khong keu; bao nhanh 2 vong: doi tuong chua du 3 lan de xac nhan nhung van phai keu ngay
+            active = len(self.det.zone) >= 3 and (any(tr.in_zone for tr in vis) or (self.det.alarm and self.det._on > 0))
         return "long" if active else "pulse" if self.tracker.lost_in_zone() else "off"
 
     def _beep_tick(self):
@@ -1069,6 +1081,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _apply_detect_params(self, *_):
         self.det.margin = self.sp_margin.value(); self.det.min_size = self.sp_size.value()
         self.det.on_revs = self.sp_on.value(); self.det.use_bg = self.ck_bg.isChecked()
+        self.det.fast_revs = detect.FAST_REVS if self.ck_fast.isChecked() else 0
         self.tracker.merge_d, self.tracker.merge_dv = self.sp_mg_d.value(), self.sp_mg_dv.value()
         self.tracker.hold_s = self.sp_hold.value()
         self._redraw_recent()
@@ -1120,7 +1133,7 @@ class MainWindow(QtWidgets.QMainWindow):
                         live_mode="nucleo" if self.rb_stm.isChecked() else ("uno" if self.rb_live.isChecked() else self.cfg.get("live_mode", "uno")),
                         lock_cal=self.ck_lock.isChecked(), merge_d=self.sp_mg_d.value(), merge_dv=self.sp_mg_dv.value(),
                         hold_s=self.sp_hold.value(), beep_mode=self.cb_beep.currentText(), area_max=self.sp_area_max.value(),
-                        auto_bg=self.ck_autobg.isChecked())
+                        auto_bg=self.ck_autobg.isChecked(), fast_alarm=self.ck_fast.isChecked())
 
     def _save_settings(self):
         old = dict(self.cfg)

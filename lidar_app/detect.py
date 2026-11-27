@@ -247,6 +247,13 @@ def cluster(ang, x, y, gap=0.2, min_pts=3, min_size=0.1):
     return objs
 
 
+# bao nhanh: vat lon va nam truoc nen xa thi chi can FAST_REVS vong lien tiep thay vi on_revs
+# (log 27/11 15:58: 3 vong chiem 0,77 / 0,95 s tre bao dong; nguoi di vao cach nen 0,8-1,1 m, rong 0,3-0,6 m)
+FAST_REVS = 2
+FAST_GAP = 0.5      # m: trung vi (nen - khoang cach) cua cum
+FAST_SIZE = 0.25    # m: do rong toi thieu cua cum
+
+
 class Detector:
     def __init__(self):
         self.zone = []                  # da giac [(x, y)]
@@ -256,11 +263,13 @@ class Detector:
         self.min_pts = 3
         self.min_size = 0.10
         self.on_revs, self.off_revs = 3, 3
+        self.fast_revs = FAST_REVS      # vat ro rang bao sau bay nhieu vong (0 = tat)
         self.use_bg = True
         self.alarm = False
-        self._on = self._off = 0
+        self._on = self._off = self._clear = 0
         self.events = []                # (thoi gian, kieu, mo ta)
         self.all_objs = []              # cum khac nen tren toan phong (ca ngoai vung cam), de theo doi
+        self.small_objs = []            # cum nho hon min_size: khong sinh doi tuong moi, chi noi tiep doi tuong da co
         self.hold = False               # True: con vat co the dang khuat duoi mat quet, chua duoc het bao dong
 
     def classify(self, xy):
@@ -281,33 +290,47 @@ class Detector:
         """xy: dict tu core.to_xy. Tra ve (objs, mask_fg, alarm_moi_bat)."""
         x, y, ang = xy["x"], xy["y"], xy["ang"]
         d_m = xy.get("d_m", xy["r"])
-        self.all_objs = []
+        self.all_objs, self.small_objs = [], []
         if self.bg.learning_left > 0:
             done = self.bg.feed(ang, d_m)
             if done:
                 self.events.append((time.time(), "INFO", "Học nền xong"))
             return [], np.zeros(len(x), bool), False
         if self.use_bg and not self.bg.ready():          # chua hoc nen -> khong phan biet duoc tuong voi vat
-            self.alarm, self._on, self._off = False, 0, 0
+            self.alarm, self._on, self._off, self._clear = False, 0, 0, 0
             return [], np.zeros(len(x), bool), False
         if self.use_bg:                                  # khong co nen thi tuong cung la cum, khong theo doi duoc
             fa = self.bg.foreground(ang, d_m, self.margin)
-            self.all_objs = cluster(ang[fa], x[fa], y[fa], self.gap, self.min_pts, self.min_size)
+            objs_all = cluster(ang[fa], x[fa], y[fa], self.gap, self.min_pts, 0.0)
+            big = [o.size >= self.min_size or o.n >= 3 * self.min_pts for o in objs_all]
+            self.all_objs = [o for o, k in zip(objs_all, big) if k]
+            # cum nho hon min_size: chi dung de noi tiep doi tuong dang theo doi (log 27/11 15:58: nguoi sat tuong
+            # chi con 5 khung TF03 trung nhau, rong 0,12 m < 0,25 m -> mat dau 6 s du LiDAR van thay)
+            self.small_objs = [o for o, k in zip(objs_all, big) if not k]
             r0 = float(np.median(d_m - xy["r"])) if len(x) else 0.0      # nen tinh theo khoang cach tho d_m = r + r0
-            for o in self.all_objs:
+            for o in objs_all:
                 b = (o.ang / self.bg.bin_deg).astype(int) % self.bg.nb
                 o.gap = float(np.median(self.bg.bg[b] - (np.hypot(o.xs, o.ys) + r0)))
         objs, fg = self.classify(xy)
         newly = False
         if objs:
             self._on += 1; self._off = 0
-            if not self.alarm and self._on >= self.on_revs:
+            if self.use_bg and self.bg.ready():
+                r0 = float(np.median(d_m - xy["r"])) if len(x) else 0.0
+                for o in objs:
+                    b = (o.ang / self.bg.bin_deg).astype(int) % self.bg.nb
+                    o.gap = float(np.median(self.bg.bg[b] - (np.hypot(o.xs, o.ys) + r0)))
+            # vat ro rang: du lon va nam truoc nen xa -> khong phai nhieu khoang cach hay rung mep tuong
+            clear = any(o.size >= max(self.min_size, FAST_SIZE) and o.gap >= FAST_GAP for o in objs)
+            self._clear = self._clear + 1 if clear else 0
+            fast = 0 < self.fast_revs < self.on_revs and self._clear >= self.fast_revs
+            if not self.alarm and (self._on >= self.on_revs or fast):
                 self.alarm, newly = True, True
                 big = max(objs, key=lambda o: o.size)
                 self.events.append((time.time(), "BÁO ĐỘNG",
                                     "%d vật | lớn nhất %.2f m tại (%.2f, %.2f)" % (len(objs), big.size, big.cx, big.cy)))
         else:
-            self._off += 1; self._on = 0
+            self._off += 1; self._on = self._clear = 0
             if self.alarm and self._off >= self.off_revs and not self.hold:
                 self.alarm = False
                 self.events.append((time.time(), "HẾT", "Vùng cấm trống"))
@@ -428,7 +451,8 @@ class Tracker:
 
     def hold_active(self, zone):
         """Con doi tuong dang duoc giu, hoac neu bien mat ngay thi se duoc giu. Detector khong duoc het bao dong."""
-        return any(tr.lost_since is not None and tr.in_zone or self._can_hold(tr, zone) for tr in self.confirmed())
+        # doi tuong dang thay trong vung (ke ca chi con cum nho) cung giu bao dong
+        return any(tr.in_zone or self._can_hold(tr, zone) for tr in self.confirmed())
 
     def clear_lost(self):
         """Nguoi van hanh xac nhan vung trong: bo cac doi tuong dang giu."""
@@ -541,8 +565,9 @@ class Tracker:
         keep = t >= t[-1] - self.hist_s
         tr.t, tr.x, tr.y = [v for v, c in zip(tr.t, keep) if c], [v for v, c in zip(tr.x, keep) if c], [v for v, c in zip(tr.y, keep) if c]
 
-    def update(self, sc, objs, zone=()):
-        """Cap nhat bang mot vong quet. Tra ve danh sach doi tuong da xac nhan."""
+    def update(self, sc, objs, zone=(), small=()):
+        """Cap nhat bang mot vong quet. Tra ve danh sach doi tuong da xac nhan.
+        small: cum nho hon min_size, chi noi tiep doi tuong da xac nhan dang thay, khong sinh doi tuong moi."""
         meas = self._measure(sc, objs)
         pairs = []
         for i, tr in enumerate(self.tracks):
@@ -562,6 +587,21 @@ class Tracker:
             if i in got or j in used_m:
                 continue
             got[i] = [j]; used_m.add(j)
+        if small:                                               # doi tuong da xac nhan khong co cum lon: thu cum nho gan du doan
+            ms = [m for m in self._measure(sc, small) if not any(
+                math.hypot(m[1] - meas[j][1], m[2] - meas[j][2]) < self.merge for j in used_m)]   # manh cua vat da khop
+            sp, taken = [], set()
+            for i, tr in enumerate(self.tracks):
+                if i in got or tr.lost_since is not None or tr.hits < self.confirm:
+                    continue
+                for k, m in enumerate(ms):
+                    d, dt = self._pred_dist(tr, m)
+                    if d <= self.gate + self.vmax * dt * 0.5:
+                        sp.append((d, i, k))
+            for d, i, k in sorted(sp):
+                if i in got or k in taken:
+                    continue
+                taken.add(k); meas.append(ms[k]); got[i] = [len(meas) - 1]; used_m.add(len(meas) - 1)
         for i, tr in enumerate(self.tracks):                    # doi tuong da gop gom them cac cum con gan
             if tr.merged and now - tr.absorb_t > self.absorb_s:
                 tr.merged = 0                                   # lau khong con cum thu hai: da la mot vat
@@ -724,12 +764,18 @@ class AlarmLog:
         if self.row:
             self.row["t_snap"] = t
 
+    def mark_shown(self, t):
+        """O bao dong da chuyen do (ghi o cot t_shown, truoc ca luu anh)."""
+        if self.row:
+            self.row["t_shown"] = t
+
     def finish(self, t_shown):
         """Goi sau khi da ve o trang thai; tra ve do tre tu luc tia cham vat (s) hoac None."""
         r, self.row = self.row, None
         if r is None:
             return None
         sc, big, (seq0, t_hit) = r["sc"], r["big"], r["first"]
+        t_shown = r.get("t_shown", t_shown)
         self._write("BAO_DONG,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%d\n" % (
             sc.seq, seq0, sc.seq - seq0 + 1, r["on"], sc.period, t_hit, sc.t + sc.period, r["t_ready"], r["t_alarm"],
             r["t_snap"], t_shown, t_shown - t_hit, time.time(), big.cx, big.cy, big.size, big.n))
