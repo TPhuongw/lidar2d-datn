@@ -129,12 +129,13 @@ class Background:
         self.nb = int(round(360 / bin_deg))
         self.bin_deg = bin_deg
         self.samples = []
-        self.bg = None                      # khoang cach nen (m) theo o goc, inf = trong
+        self.bg = None                      # khoang cach nen (m) theo o goc, inf = trong (da lay min lan can, dung de phat hien)
+        self.bg_raw = None                  # nen tho truoc khi lay min lan can: chi dung de do do xoay (rotation)
         self.learning_left = 0
         self.t_learn, self.rps = None, None # hoc luc nao, o toc do nao (de ghi vao session.json)
 
     def start_learning(self, n_revs=20):
-        self.samples, self.learning_left, self.bg = [], n_revs, None
+        self.samples, self.learning_left, self.bg, self.bg_raw = [], n_revs, None, None
         self.t_learn, self.rps = None, None
 
     def feed(self, ang_deg, r):
@@ -153,6 +154,7 @@ class Background:
                 bg = np.nanmedian(S, axis=0)
             valid = np.sum(~np.isnan(S), axis=0) >= max(2, len(S) // 3)
             self.bg = np.where(valid, bg, np.inf)
+            self.bg_raw = self.bg.copy()
             # lap lo trong va chong bao gia o mep vat khi goc dao dong ~1 do: lay min trong lan can +-2 o
             for k in (1, 2):
                 self.bg = np.minimum(self.bg, np.minimum(np.roll(self.bg, k), np.roll(self.bg, -k)))
@@ -166,21 +168,24 @@ class Background:
     def save(self, path, rps, r0):
         tmp = path + ".tmp"
         with open(tmp, "wb") as f:
-            np.savez(f, bg=self.bg, bin_deg=self.bin_deg, rps=rps, r0=r0, t=time.time(), tho=1)   # tho=1: nen theo khoang cach tho d_m
+            np.savez(f, bg=self.bg, bin_deg=self.bin_deg, rps=rps, r0=r0, t=time.time(), tho=1,   # tho=1: nen theo khoang cach tho d_m
+                     **({} if self.bg_raw is None else dict(bg_raw=self.bg_raw)))
         os.replace(tmp, path)                           # app chet giua chung khong lam hong file cu
 
     @staticmethod
     def read(path):
         with np.load(path) as d:
             return dict(bg=d["bg"], bin_deg=float(d["bin_deg"]), rps=float(d["rps"]), r0=float(d["r0"]), t=float(d["t"]),
-                        tho="tho" in d.files)
+                        tho="tho" in d.files, bg_raw=d["bg_raw"] if "bg_raw" in d.files else None)
 
     def apply(self, data, r0_now):
         """Dung nen da doc. Nen moi luu theo khoang cach tho d_m (khong phu thuoc r0); file cu luu r = d_m - r0 thi cong lai r0 luc do.
         r0_now giu de tuong thich, khong con dung."""
         if data["bin_deg"] != self.bin_deg or len(data["bg"]) != self.nb:
             raise ValueError("File nền không đúng độ phân giải góc.")
-        self.bg, self.samples, self.learning_left = data["bg"] + (0.0 if data.get("tho") else data["r0"]), [], 0
+        add = 0.0 if data.get("tho") else data["r0"]
+        self.bg, self.samples, self.learning_left = data["bg"] + add, [], 0
+        self.bg_raw = None if data.get("bg_raw") is None else data["bg_raw"] + add   # file cu khong co: do xoay theo nen da loc
         self.t_learn, self.rps = data["t"], data["rps"]
 
     def rotation(self, ang_deg, r, max_deg=60.0, min_frac=0.3):
@@ -192,7 +197,8 @@ class Background:
         row = np.full(self.nb, np.nan)
         order = np.argsort(r)[::-1]
         row[b[order]] = np.asarray(r)[order]
-        bg = np.where(np.isfinite(self.bg), self.bg, np.nan)
+        ref = self.bg if self.bg_raw is None else self.bg_raw  # nen da lay min lan can lam lech ket qua tu 0,5 den 1,4 do
+        bg = np.where(np.isfinite(ref), ref, np.nan)
         ks = np.arange(-int(max_deg / self.bin_deg), int(max_deg / self.bin_deg) + 1)
         sh = row[(np.arange(self.nb)[None, :] - ks[:, None]) % self.nb]      # sh[i] = row xoay ks[i] o
         d = np.abs(sh - bg[None, :])
@@ -204,7 +210,11 @@ class Background:
             warnings.simplefilter("ignore", RuntimeWarning)
             score = np.nanmedian(d, axis=1)
         score[cnt < min_frac * self.nb] = np.inf
-        i = int(np.argmin(score))
+        # nhieu do xoay cung cho sai so nho nhat (cao nguyen, hay gap khi phai so voi nen da loc cua file nen cu):
+        # lay giua cao nguyen thay vi dau am ma argmin chon
+        best = float(np.min(score))
+        flat = np.where(score <= best + 1e-3)[0]
+        i = int(flat[len(flat) // 2]) if len(flat) and flat[-1] - flat[0] == len(flat) - 1 else int(np.argmin(score))
         k = float(ks[i])
         if 0 < i < len(ks) - 1 and np.isfinite(score[i - 1]) and np.isfinite(score[i + 1]):
             den = score[i - 1] - 2 * score[i] + score[i + 1]      # noi suy parabol: duoi nua o, khong lech ve phia am khi hai o bang diem

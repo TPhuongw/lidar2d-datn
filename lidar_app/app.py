@@ -37,7 +37,7 @@ ALIGN_MAX_SPREAD = 1.5  # do: cac vong cho do lech khac nhau qua muc nay thi kho
 SYNC_MAX_AGE = 30.0   # s: qua lau khong co moc 0 do nao ve dung gio thi goc khong con tin duoc -> chan phat hien
 DEFAULTS = dict(tf_port="COM12", uno_port="COM10", tf_baud=115200, tf_hz=1000, rps=1.0, r0=0.0, offset=0.0, dir=1, maxcm=3000, minstr=0,
                 accum=1, color="cường độ", view=5.0, zone=[], margin=0.15, min_size=0.10, on_revs=3,
-                learn_revs=20, replay_dir="", replay_speed=1.0, lock_cal=False, merge_d=0.6, merge_dv=0.25, hold_s=60.0, beep_mode="Có vật trong vùng", area_max=8.0, auto_bg=True)
+                learn_revs=20, replay_dir="", replay_speed=1.0, lock_cal=False, merge_d=0.6, merge_dv=0.25, hold_s=60.0, beep_mode="Có vật trong vùng", area_max=8.0, auto_bg=True, live_mode="uno")
 
 
 class BeepPlayer:
@@ -185,13 +185,20 @@ class MainWindow(QtWidgets.QMainWindow):
         # --- nguon
         g = QtWidgets.QGroupBox("1. Nguồn dữ liệu"); f = QtWidgets.QFormLayout(g)
         self.rb_live = QtWidgets.QRadioButton("Trực tiếp (TF03 + UNO)")
+        self.rb_stm = QtWidgets.QRadioButton("Trực tiếp (Nucleo, TF03 nối vào STM32)")
+        self.rb_stm.setToolTip("Firmware firmware/nucleo_lidar. Góc = số bước kể từ mốc 0° do STM32 gắn vào từng khung TF03. Chỉ dùng cổng COM UNO / Nucleo.")
         self.rb_replay = QtWidgets.QRadioButton("Phát lại thư mục log")
-        self.rb_replay.setChecked(True) if self.cfg["replay_dir"] else self.rb_live.setChecked(True)
-        f.addRow(self.rb_live); f.addRow(self.rb_replay)
+        if self.cfg["replay_dir"]:
+            self.rb_replay.setChecked(True)
+        elif self.cfg["live_mode"] == "nucleo":
+            self.rb_stm.setChecked(True)
+        else:
+            self.rb_live.setChecked(True)
+        f.addRow(self.rb_live); f.addRow(self.rb_stm); f.addRow(self.rb_replay)
         self.cb_tf = combo(True); self.cb_uno = combo(True)
         self._fill_ports()
         bt_ref = QtWidgets.QPushButton("Quét cổng"); bt_ref.clicked.connect(self._fill_ports)
-        f.addRow("COM TF03", self.cb_tf); f.addRow("COM UNO", self.cb_uno); f.addRow(bt_ref)
+        f.addRow("COM TF03", self.cb_tf); f.addRow("COM UNO / Nucleo", self.cb_uno); f.addRow(bt_ref)
         self.sp_rps = dspin(0.1, 5, 0.25, self.cfg["rps"])
         self.sp_rps.valueChanged.connect(lambda v: self.src and isinstance(self.src, core.LiveSource) and self.src.set_speed(v))
         f.addRow("Tốc độ quay (vòng/s)", self.sp_rps)
@@ -506,10 +513,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self.src.stop(); self.src = None
             self.lb_ov.hide()
             self.bt_start.setText("Bắt đầu"); return
-        self.mapper = core.Mapper(); self.recent = []; self.rate_hist = []
+        stm = self.rb_stm.isChecked() or (self.rb_replay.isChecked() and core.is_stm_log(self.le_dir.text()))
+        self.mapper = core.StepMapper() if stm else core.Mapper(); self.recent = []; self.rate_hist = []
         try:
             if self.rb_replay.isChecked():
-                self.src = core.ReplaySource(self.mapper, self.le_dir.text(), float(self.cb_speed.currentText()))
+                rs = core.StmReplaySource if stm else core.ReplaySource
+                self.src = rs(self.mapper, self.le_dir.text(), float(self.cb_speed.currentText()))
+            elif stm:
+                self.src = core.StmLiveSource(self.mapper, self.cb_uno.currentText(), self.sp_rps.value(),
+                                              logdir=os.path.join(HERE, time.strftime("log_%Y%m%d_%H%M%S")))
             else:
                 self.src = core.LiveSource(self.mapper, self.cb_tf.currentText(), self.cb_uno.currentText(),
                                            self.sp_rps.value(), tf_baud=int(self.cb_baud.currentText()),
@@ -527,7 +539,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._read_ui()
             replay = isinstance(self.src, core.ReplaySource)            # phat lai khong ghi de thong so cua lan do that
             self.session = core.SessionLog(os.path.join(self.src.logdir, "session_replay.json" if replay else "session.json"),
-                                           self.cfg, "Phát lại" if replay else "Trực tiếp", code_version())
+                                           self.cfg, "Phát lại" if replay else ("Trực tiếp (Nucleo)" if stm else "Trực tiếp"), code_version())
             bg = self.det.bg
             if not replay and self.ck_autobg.isChecked() and bg.learning_left == 0:
                 if not bg.ready() and os.path.exists(BG_FILE):
@@ -558,7 +570,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return False, None
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
-            return True, fn(self.cb_tf.currentText(), *args)
+            return True, fn((self.cb_uno if self.rb_stm.isChecked() else self.cb_tf).currentText(), *args)
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "TF03", str(e))
             return False, None
@@ -566,7 +578,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QApplication.restoreOverrideCursor()
 
     def tf03_probe(self):
-        ok, res = self._tf03_run(core.tf03_probe)
+        ok, res = self._tf03_run(core.stm_tf03_probe if self.rb_stm.isChecked() else core.tf03_probe)
         if not ok:
             return
         if res is None:
@@ -580,7 +592,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if hz > 1000 and QtWidgets.QMessageBox.question(self, "TF03", "Trên 1000 Hz chưa được kiểm chứng với TF03 này. Vẫn đặt?") \
                 != QtWidgets.QMessageBox.Yes:
             return
-        ok, res = self._tf03_run(core.tf03_set_rate, int(self.cb_baud.currentText()), hz)
+        if self.rb_stm.isChecked():                     # Nucleo tu do baud TF03 truoc khi gui lenh
+            ok, res = self._tf03_run(core.stm_tf03_set_rate, hz)
+        else:
+            ok, res = self._tf03_run(core.tf03_set_rate, int(self.cb_baud.currentText()), hz)
         if ok:
             saved, rate, bad = res
             self.lb_tf.setText("Đo lại: khoảng %.0f Hz, %d khung lỗi%s" % (rate, bad, "" if saved else ". TF03 không xác nhận lưu!"))
@@ -589,6 +604,12 @@ class MainWindow(QtWidgets.QMainWindow):
         new = int(self.cb_newbaud.currentText())
         if QtWidgets.QMessageBox.question(self, "TF03", "Đổi TF03 sang %d baud? Sau đó phải rút nguồn TF03 rồi cắm lại." % new) \
                 != QtWidgets.QMessageBox.Yes:
+            return
+        if self.rb_stm.isChecked():
+            ok, saved = self._tf03_run(core.stm_tf03_set_baud, new)
+            if ok:
+                self.lb_tf.setText(("Đã lưu. " if saved else "TF03 không xác nhận lưu. ") +
+                                   "Rút dây đỏ (5V) của TF03 hoặc rút USB Nucleo, cắm lại, rồi bấm Dò TF03.")
             return
         ok, saved = self._tf03_run(core.tf03_set_baud, int(self.cb_baud.currentText()), new)
         if ok:
@@ -600,6 +621,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self.src:
             return
         self.src.tick()
+        p = getattr(self.src, "tf_probe", None)        # Nucleo: ket qua do TF03 luc bat dau
+        if p and p != getattr(self, "_tf_shown", None):
+            self._tf_shown = p
+            self.lb_tf.setText("Qua Nucleo: %d baud, khoảng %.0f Hz" % p); self.cb_baud.setCurrentText(str(p[0]))
+            self.session and self.session.note("tf03_qua_nucleo", self.src.now() - self.t_start, baud=p[0], khung_s=p[1])
         scans = self.mapper.process()
         t_ready = self.src.now()
         for sc in scans:
@@ -832,7 +858,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if mode == BEEP_MOVE:
             active = any(tr.moving for tr in vis)
         else:
-            active = any(tr.in_zone for tr in vis) if len(self.det.zone) >= 3 else bool(vis)
+            active = len(self.det.zone) >= 3 and any(tr.in_zone for tr in vis)   # chua co vung cam thi khong keu
         return "long" if active else "pulse" if self.tracker.lost_in_zone() else "off"
 
     def _beep_tick(self):
@@ -951,7 +977,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.draft_item.setData(xs, ys)
 
     def clear_zone(self):
-        self.det.zone = []; self._draw_zone(); self._mark_dirty(); self._redraw_recent()
+        self.det.zone = []
+        for tr in self.tracker.tracks:                   # tat bip ngay, khong doi vong quet ke tiep
+            tr.in_zone, tr.zone_since = False, None
+        self._draw_zone(); self._mark_dirty(); self._redraw_recent(); self._beep_tick()
 
     def _draw_zone(self):
         z = self.det.zone
@@ -977,11 +1006,13 @@ class MainWindow(QtWidgets.QMainWindow):
             k = int(round(rot / bg.bin_deg)) if abs(rot) >= ALIGN_MIN_DEG else 0
             if k:
                 bg.bg = np.roll(bg.bg, -k)                 # rotation(): roll(vong, k) khop nen -> nen moi = roll(nen, -k)
+                if bg.bg_raw is not None:
+                    bg.bg_raw = np.roll(bg.bg_raw, -k)
                 if isinstance(self.src, core.LiveSource):
                     self._save_bg(sc)
             msg = "Nền đã lưu khớp: lệch %.1f°%s, sai số %.0f cm" % (rot, " (đã xoay nền theo)" if k else "", err * 100)
         else:
-            bg.bg = None                                   # khong dung nen sai: thay "CHUA HOC NEN" thay vi bao gia
+            bg.bg = bg.bg_raw = None                       # khong dung nen sai: thay "CHUA HOC NEN" thay vi bao gia
             if abs(rot) >= 2 * ALIGN_MAX_DEG - 0.5:          # cham bien vung tim
                 why = "lệch từ %.0f° trở lên" % (2 * ALIGN_MAX_DEG)
             elif abs(rot) > ALIGN_MAX_DEG:
@@ -1072,6 +1103,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._save_timer.stop()
             self._save_settings()                       # ghi not thay doi trong nua giay cuoi
             self.session.d["so_vong_bo_do_lech_goc"] = self.n_rot_bad
+            self.session.d["mapper_bo_vong"] = dict(getattr(self.mapper, "skip_why", {}))
+            if hasattr(self.mapper, "n_lost"):
+                self.session.d["nucleo"] = dict(goi_mat=self.mapper.n_lost, loi_tf03=self.mapper.dev_bad, so_moc=self.mapper.n_idx, so_khung=self.mapper.n_frames)
             self.session.end()
             self.session = None
 
@@ -1083,6 +1117,7 @@ class MainWindow(QtWidgets.QMainWindow):
                         color=self.cb_color.currentText(), zone=self.det.zone, margin=self.sp_margin.value(),
                         min_size=self.sp_size.value(), on_revs=self.sp_on.value(), learn_revs=self.sp_learn.value(),
                         replay_dir=self.le_dir.text(), replay_speed=float(self.cb_speed.currentText()),
+                        live_mode="nucleo" if self.rb_stm.isChecked() else ("uno" if self.rb_live.isChecked() else self.cfg.get("live_mode", "uno")),
                         lock_cal=self.ck_lock.isChecked(), merge_d=self.sp_mg_d.value(), merge_dv=self.sp_mg_dv.value(),
                         hold_s=self.sp_hold.value(), beep_mode=self.cb_beep.currentText(), area_max=self.sp_area_max.value(),
                         auto_bg=self.ck_autobg.isChecked())

@@ -25,6 +25,12 @@ python app.py
 ## Chạy với phần cứng
 1. UNO nạp **bản mới** `index_flag_test.ino` (dòng mốc có `t=`), đóng Arduino IDE.
 2. Chọn **Trực tiếp**, chọn cổng TF03 (FT232) và UNO → **Bắt đầu**. Động cơ tự quay theo ô *Tốc độ quay*.
+   - **Nucleo (bước 3):** chọn **Trực tiếp (Nucleo, TF03 nối vào STM32)**, ô *COM UNO / Nucleo* là cổng ST-Link. Firmware và cách nối nằm ở `firmware/nucleo_lidar/README.md`.
+     - Góc = số bước kể từ mốc 0° × 0,1125°, do STM32 gắn vào từng khung (`core.StepMapper`), nên không còn phụ thuộc thời điểm PC nhận dữ liệu.
+     - Log gồm `stm_raw.csv` và `stm_idx.csv`. Khi phát lại, app tự nhận ra loại log.
+     - `session.json` có thêm mục `nucleo` (gói mất, lỗi TF03, số mốc, số khung) và `mapper_bo_vong` (lý do bỏ vòng).
+     - Đã thử bằng Nucleo giả lập: góc đúng tới mức làm tròn 1 cm, mất gói hoặc byte hỏng chỉ làm bỏ vòng chứ không làm sai góc. Chưa chạy trên phần cứng.
+   - Firmware `firmware/nucleo_moc0` cho Nucleo giả làm UNO: dùng với lựa chọn Trực tiếp (TF03 + UNO) cũ, chọn ô UNO là cổng ST-Link.
 3. Dữ liệu thô được ghi vào `log_<ngày giờ>/` cạnh `app.py` → phát lại được bất kỳ lúc nào.
 
 ## Đổi baud và tần số TF03
@@ -131,6 +137,7 @@ Giới hạn:
 | Báo khi liên tiếp (vòng) | Chống báo động giả; tăng lên nếu hay báo nhầm |
 
 ## Đồng bộ thời gian & ghép góc (`core.py`)
+- **Đo độ xoay so với nền** (dùng cho chặn vòng lệch góc và tự căn nền) so vòng quét với **nền thô** (`Background.bg_raw`, trước khi lấy min lân cận ±2 ô). Nền đã lọc vẫn dùng để phát hiện vật. So vòng quét với nền đã lọc thì góc khớp nhất bị đẩy lệch sang một phía: trên log `log_20261110_101719`, 608 vòng, trung vị −1,25°, khoảng 5–95 % từ −1,75° tới +2,50°, 118 vòng lệch quá 2°. So với nền thô: trung vị +0,50°, khoảng 5–95 % từ 0 tới +0,50°, không vòng nào lệch quá 2°. Nền lưu từ phiên bản trước không có nền thô thì vẫn đo theo cách cũ; học lại nền một lần để có nền thô.
 Bản hiện tại là bản kết hợp sau khi merge hai bản sửa lệch góc độc lập: bản ngày 06/11 trên máy đo và bản ngày 09/11 (`53fa5f1`). Chi tiết về các lỗi dẫn tới từng bước sửa nằm ở mục "Mốc 0° về trễ, dồn cục" phía trên.
 - **Thời điểm khung TF03**: lấy theo thời điểm PC nhận gói chứa khung đó, lùi một chu kỳ khung cho mỗi khung đứng sau nó trong gói. Nếu gói về trễ hơn mô hình đường thẳng quá 15 ms thì dùng mô hình. Mô hình là biên dưới (cạnh bao lồi dưới) của 400 gói gần nhất (`ClockSync(hull=True)`).
 - **Đồng hồ mốc 0°**: độ trôi chỉ cập nhật khi mốc đang về tốt (hồi quy trên các mốc đúng giờ trong 1500 mốc gần nhất); độ lệch là biên dưới của 300 mốc gần nhất.

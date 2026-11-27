@@ -103,6 +103,70 @@ def tf03_set_rate(port, baud, hz):
     return saved, rate, bad
 
 
+# --- TF03 noi vao Nucleo (firmware nucleo_lidar): cau hinh qua lenh chu tren cong VCP
+STM_VCP_BAUD = 460800
+
+
+def _stm_ask(ser, cmd, prefixes, timeout):
+    """Gui mot lenh chu, tra ve dong dau tien bat dau bang mot trong prefixes (None neu het gio)."""
+    ser.write(b"b 0\n"); time.sleep(0.15); ser.reset_input_buffer()
+    ser.write((cmd + "\n").encode())
+    buf, t_end = b"", time.perf_counter() + timeout
+    while time.perf_counter() < t_end:
+        buf += ser.read(max(1, ser.in_waiting))
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            s = line.decode("ascii", "replace").strip()
+            if s.startswith(prefixes):
+                return s
+    return None
+
+
+def stm_parse_probe(line):
+    """'TF03 DO baud 460800 khung/s 1000' -> (460800, 1000.0); 'TF03 DO khong thay ...' hoac None -> None."""
+    m = re.match(r"TF03 DO baud (\d+) khung/s (\d+)", line or "")
+    return (int(m.group(1)), float(m.group(2))) if m else None
+
+
+def stm_tf03_probe(port):
+    """Nucleo tu do baud TF03 (lenh p). Tra ve (baud, khung/s) hoac None."""
+    import serial
+    with serial.Serial(port, STM_VCP_BAUD, timeout=0.05) as ser:
+        line = _stm_ask(ser, "p", ("TF03 DO",), 4.0)
+    if line is None:
+        raise ValueError("Nucleo không trả lời lệnh dò. Kiểm tra cổng COM và firmware nucleo_lidar mới nhất.")
+    return stm_parse_probe(line)
+
+
+def stm_tf03_set_rate(port, hz):
+    """Lenh f <Hz> qua Nucleo. Tra ve (da nhan lenh luu, khung/s do lai, 0)."""
+    import serial
+    if hz not in TF03_RATES:
+        raise ValueError("Tần số %d Hz không nằm trong danh sách cho phép." % hz)
+    with serial.Serial(port, STM_VCP_BAUD, timeout=0.05) as ser:
+        if _stm_ask(ser, "p", ("TF03 DO",), 4.0) is None:   # baud USART1 cua Nucleo phai dung baud TF03
+            raise ValueError("Nucleo không trả lời lệnh dò. Kiểm tra cổng COM và firmware nucleo_lidar mới nhất.")
+        line = _stm_ask(ser, "f %d" % hz, ("TF03:", "Chi cho phep", "%d Hz can" % hz), 3.0)
+    m = re.match(r"TF03: dat \d+ Hz, lenh luu (.+), do lai (\d+) khung/s", line or "")
+    if not m:
+        raise ValueError(line or "Nucleo không trả lời lệnh đặt tần số.")
+    return not m.group(1).startswith("KHONG"), float(m.group(2)), 0
+
+
+def stm_tf03_set_baud(port, new_baud):
+    """Lenh B <baud> qua Nucleo. True neu TF03 nhan lenh luu. Co hieu luc sau khi rut nguon TF03."""
+    import serial
+    if new_baud not in TF03_BAUDS:
+        raise ValueError("Baud %d không nằm trong danh sách cho phép." % new_baud)
+    with serial.Serial(port, STM_VCP_BAUD, timeout=0.05) as ser:
+        if _stm_ask(ser, "p", ("TF03 DO",), 4.0) is None:
+            raise ValueError("Nucleo không trả lời lệnh dò. Kiểm tra cổng COM và firmware nucleo_lidar mới nhất.")
+        line = _stm_ask(ser, "B %d" % new_baud, ("TF03 BAUD",), 3.0)
+    if line is None or line.startswith("TF03 BAUD loi"):
+        raise ValueError(line or "Nucleo không trả lời lệnh đổi baud.")
+    return "KHONG" not in line
+
+
 def tf03_set_baud(port, baud, new_baud):
     """Dat va luu baud moi; chi co hieu luc sau khi rut nguon TF03. Tra ve True neu TF03 nhan lenh luu."""
     import serial
@@ -606,3 +670,279 @@ class ReplaySource:
 
     def stop(self):
         self.finished = True
+
+
+# ------------------------------------------------------------------ Nucleo (buoc 3): TF03 noi vao STM32, goc theo so buoc
+# Firmware: firmware/nucleo_lidar. Moi khung TF03 mang so buoc ke tu moc 0 do gan nhat, nen goc = buoc x 360 / 3200,
+# khong con ghep goc theo thoi diem PC nhan du lieu (nguon cua moi loi xoay ban do truoc day).
+STM_FRAME, STM_INDEX = 0x55, 0x56
+STM_PKT = 16
+_CRC8 = []
+for _i in range(256):
+    _c = _i
+    for _ in range(8):
+        _c = ((_c << 1) ^ 0x07) & 0xFF if _c & 0x80 else (_c << 1) & 0xFF
+    _CRC8.append(_c)
+
+
+def crc8(data):
+    """CRC-8, da thuc 0x07, khoi dau 0 (giong firmware)."""
+    c = 0
+    for b in data:
+        c = _CRC8[c ^ b]
+    return c
+
+
+class StmParser:
+    """Tach goi 16 byte tu luong USART cua Nucleo. Byte nam ngoai goi la dong chu (phan hoi lenh)."""
+
+    def __init__(self):
+        self.buf, self.text, self.bad = bytearray(), bytearray(), 0
+
+    def feed(self, data):
+        """Tra ve (goi, dong_chu). goi: ('f', seq, t_us, step, dist, str, rev, flags) hoac ('i', seq, t_us, rev_steps, n_khung, tf_loi, rev, flags)."""
+        self.buf += data
+        b, i, n, pk, lines = self.buf, 0, len(self.buf), [], []
+        while i < n:
+            if b[i] == 0xAA:
+                if i + 1 >= n:
+                    break
+                if b[i + 1] in (STM_FRAME, STM_INDEX):
+                    if i + STM_PKT > n:
+                        break
+                    if crc8(b[i:i + 15]) == b[i + 15]:
+                        if b[i + 1] == STM_FRAME:
+                            seq, t, st, d, s, rev, fl = struct.unpack_from("<BIhHHBB", b, i + 2)
+                            pk.append(("f", seq, t, st, d, s, rev, fl))
+                        else:
+                            seq, t, rs, nf, tl, rev, fl = struct.unpack_from("<BIhHHBB", b, i + 2)
+                            pk.append(("i", seq, t, rs, nf, tl, rev, fl))
+                        i += STM_PKT
+                        continue
+                    self.bad += 1
+                i += 1
+                continue
+            c = b[i]
+            if c == 0x0A:
+                if self.text:
+                    lines.append(self.text.decode(errors="ignore").strip()); self.text = bytearray()
+            elif 32 <= c < 127 and len(self.text) < 200:
+                self.text.append(c)
+            i += 1
+        self.buf = b[i:]
+        return pk, lines
+
+
+class StepMapper:
+    """Gom khung theo so thu tu moc (rev) thanh vong quet. Cung giao dien Mapper (process, periods, sync_state, n_idx...).
+    Bo vong: thieu goi moc dau/cuoi (thieu_moc), so buoc/vong lech 3200 qua 2 buoc (buoc_vong), mat > 2 % goi (mat_goi)."""
+
+    def __init__(self, steps_per_rev=3200):
+        self.spr = steps_per_rev
+        self.lock = threading.Lock()
+        self.cs = ClockSync(400, hull=True)               # thoi gian Nucleo (s) -> dong ho PC, chi de gan nhan thoi gian
+        self.out, self.pending = [], []
+        self.cur_rev, self.cur, self.cur_lost = None, [], 0
+        self.first_rev = None
+        self.info = {}                                     # rev -> (t_s, rev_steps, n_khung)
+        self.idx_t = collections.deque(maxlen=60)
+        self._t_last = self._rev_last = None              # bo tro mo vong 32 bit / 8 bit
+        self._seq_last = None
+        self.seq = 0
+        self.n_frames = self.n_idx = 0
+        self.t_last_frame = self.t_last_idx = None
+        self.n_lost = 0                                    # goi mat (theo seq)
+        self.dev_bad = 0                                   # loi TF03 tren Nucleo (checksum + tran)
+        self.n_skip = 0
+        self.skip_why = collections.Counter()
+
+    def _unwrap_t(self, t):
+        if self._t_last is None:
+            self._t_last = t
+            return t * 1e-6
+        d = (t - (self._t_last & 0xFFFFFFFF)) & 0xFFFFFFFF
+        if d >= 1 << 31:
+            d -= 1 << 32
+        full = self._t_last + d
+        self._t_last = max(self._t_last, full)
+        return full * 1e-6
+
+    def _unwrap_rev(self, r):
+        if self._rev_last is None:
+            self._rev_last = r
+            return r
+        d = (r - (self._rev_last & 0xFF)) & 0xFF
+        if d >= 128:
+            d -= 256
+        full = self._rev_last + d
+        self._rev_last = max(self._rev_last, full)
+        return full
+
+    def add(self, pkts, t_arr):
+        if not pkts:
+            return
+        with self.lock:
+            t_s = None
+            for p in pkts:
+                seq = p[1]
+                if self._seq_last is not None:
+                    gap = (seq - self._seq_last - 1) & 0xFF
+                    if gap:
+                        self.n_lost += gap; self.cur_lost += gap
+                self._seq_last = seq
+                t_s = self._unwrap_t(p[2])
+                rev = self._unwrap_rev(p[6])
+                if p[0] == "i":
+                    self.info[rev] = (t_s, p[3], p[4])
+                    self.idx_t.append(t_s); self.n_idx += 1; self.t_last_idx = t_arr
+                    self.dev_bad = p[5]
+                    continue
+                self.n_frames += 1; self.t_last_frame = t_arr
+                if not p[7] & 1:                           # chua co moc: chua biet goc
+                    continue
+                if self.cur_rev is None:
+                    self.cur_rev = self.first_rev = rev
+                if rev != self.cur_rev:
+                    self.pending.append((self.cur_rev, self.cur, self.cur_lost))
+                    self.cur_rev, self.cur, self.cur_lost = rev, [], 0
+                self.cur.append((p[3], p[4], p[5]))
+            if t_s is not None:
+                self.cs.add(t_s, t_arr)
+            self._emit()
+
+    def add_frames(self, p, t_arr):                        # cho StmReplaySource (dung chung ReplaySource.tick)
+        self.add(p, t_arr)
+
+    def add_index(self, p, t_arr):
+        self.add(p, t_arr)
+
+    def _skip(self, why):
+        self.n_skip += 1; self.skip_why[why] += 1
+
+    def _emit(self):
+        keep = []
+        for r, fr, lost in self.pending:
+            a, b = self.info.get(r), self.info.get(r + 1)
+            if a is None or b is None:
+                if self.cur_rev - r > 2:                   # doi 2 vong ma van thieu goi moc
+                    if r != self.first_rev:                # vong dau phien bat dau giua chung: bo im lang
+                        self._skip("thieu_moc")
+                else:
+                    keep.append((r, fr, lost))
+                continue
+            T = b[0] - a[0]
+            if abs(b[1] - self.spr) > 2:
+                self._skip("buoc_vong"); continue
+            if lost > 0.02 * max(len(fr), 1) or not fr or T <= 0:
+                self._skip("mat_goi"); continue
+            st = np.array([f[0] for f in fr], float)
+            ang = (st % self.spr) * (360.0 / self.spr)
+            t0 = float(self.cs.to_local(a[0])) if self.cs.ready() else a[0]
+            self.seq += 1
+            self.out.append(Scan(self.seq, t0, T, ang, np.array([f[1] for f in fr], float),
+                                 np.array([f[2] for f in fr], float), len(fr), extra=dict(rev=r, n_khung_nucleo=b[2])))
+        self.pending = keep
+        if len(self.info) > 50:
+            for k in sorted(self.info)[:-20]:
+                del self.info[k]
+
+    def process(self):
+        with self.lock:
+            out, self.out = self.out, []
+        return out
+
+    def periods(self):
+        with self.lock:
+            return np.diff(np.array(self.idx_t)[-20:]) if len(self.idx_t) >= 2 else np.array([])
+
+    def sync_state(self):
+        """Goc khong phu thuoc dong ho PC: luon 'dung gio'."""
+        return 0.0, 0.0, False
+
+
+class StmLiveSource(LiveSource):
+    """Nucleo chay firmware nucleo_lidar: mot cong COM (ST-Link VCP). Ghi stm_raw.csv + stm_idx.csv."""
+
+    def __init__(self, mapper, port, rps=1.0, baud=460800, logdir=None):
+        super().__init__(mapper, None, port, rps, logdir=logdir)
+        self.baud = baud
+        self.tf_probe = None    # (baud, khung/s) TF03 do duoc luc bat dau
+
+    def start(self):
+        os.makedirs(self.logdir, exist_ok=True)
+        self.flog = open(os.path.join(self.logdir, "stm_raw.csv"), "w")
+        self.flog.write("k,seq,t_us,step,dist_cm,strength,rev,flags,t_pc_s\n")
+        self.ilog = open(os.path.join(self.logdir, "stm_idx.csv"), "w")
+        self.ilog.write("k,seq,t_us,rev_steps,n_khung,tf_loi,rev,flags,t_pc_s\n")
+        self.th = [threading.Thread(target=self._guard, args=(self._stm,), daemon=True)]
+        self.th[0].start()
+
+    def _stm(self):
+        import serial
+        par, k, t_flush = StmParser(), 0, time.perf_counter()
+        with serial.Serial(self.uno_port, self.baud, timeout=0.01) as ser:
+            self.uno = ser
+            # Nucleo khoi dong luon doc TF03 o 460800: do lai baud moi lan chay (TF03 co the da doi baud)
+            self.tf_probe = stm_parse_probe(_stm_ask(ser, "p", ("TF03 DO",), 4.0))
+            ser.write(b"b 0\n"); time.sleep(0.2); ser.reset_input_buffer()
+            ser.write(b"b 1\n")
+            self.set_speed(self.rps)
+            try:
+                while not self.stop_ev.is_set():
+                    data = ser.read(max(1, ser.in_waiting))
+                    if time.perf_counter() - t_flush >= 1.0:
+                        self.flog.flush(); self.ilog.flush(); t_flush = time.perf_counter()
+                    if not data:
+                        continue
+                    if ser.in_waiting:
+                        data += ser.read(ser.in_waiting)
+                    t_arr = time.perf_counter()
+                    pkts, lines = par.feed(data)
+                    self.uno_lines.extend(lines)
+                    self.m.add(pkts, t_arr)
+                    for p in pkts:
+                        (self.flog if p[0] == "f" else self.ilog).write("%d,%s,%.6f\n" % (k, ",".join(str(v) for v in p[1:]), t_arr))
+                        k += 1
+                    self.bad_frames = par.bad + getattr(self.m, "dev_bad", 0)
+            finally:
+                self.uno = None
+                try:
+                    ser.write(b"r 0\nb 0\n"); time.sleep(0.2)
+                except Exception:
+                    pass
+
+
+def is_stm_log(logdir):
+    return os.path.exists(os.path.join(logdir, "stm_raw.csv"))
+
+
+class StmReplaySource(ReplaySource):
+    """Phat lai log cua StmLiveSource: tron hai file theo cot k (thu tu goi), gom theo t_pc nhu luc nhan."""
+
+    def __init__(self, mapper, logdir, speed=1.0):
+        self.m, self.logdir, self.speed = mapper, logdir, speed
+        self.err, self.bad_frames, self.uno_lines = "", 0, collections.deque(maxlen=50)
+        self.paused, self.finished = False, False
+        rows = []
+        for name, kind in (("stm_raw.csv", "f"), ("stm_idx.csv", "i")):
+            path = os.path.join(logdir, name)
+            if not os.path.exists(path):
+                continue
+            with open(path) as f:
+                rd = csv.reader(f); next(rd)
+                for r in rd:
+                    if len(r) == 9:
+                        rows.append((int(r[0]), float(r[8]), (kind,) + tuple(int(v) for v in r[1:8])))
+        rows.sort()
+        ev, chunk, t_prev = [], [], None
+        for _, t, p in rows:
+            if t_prev is not None and t != t_prev:
+                ev.append((t_prev, 0, chunk)); chunk = []
+            chunk.append(p); t_prev = t
+        if chunk:
+            ev.append((t_prev, 0, chunk))
+        self.ev, self.k = ev, 0
+        self.t0_log = ev[0][0] if ev else 0.0
+        self.duration = (ev[-1][0] - self.t0_log) if ev else 0.0
+        self.pos = 0.0
+        self.t_wall = None
